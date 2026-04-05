@@ -173,6 +173,7 @@ members = [
     "crates/rpc",
     "crates/rules_library",
     "crates/scheduler",
+    "crates/send_code",
     "crates/schema_generator",
     "crates/search",
     "crates/session",
@@ -433,6 +434,7 @@ rope = { path = "crates/rope" }
 rpc = { path = "crates/rpc" }
 rules_library = { path = "crates/rules_library" }
 scheduler = { path = "crates/scheduler" }
+send_code = { path = "crates/send_code" }
 search = { path = "crates/search" }
 session = { path = "crates/session" }
 sidebar = { path = "crates/sidebar" }
