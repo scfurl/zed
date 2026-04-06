@@ -883,7 +883,13 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
                         labels: None,
                         build: Some(DockerComposeServiceBuild {
                             context: Some(
-                                features_build_info.empty_context_dir.display().to_string(),
+                                main_service
+                                    .build
+                                    .as_ref()
+                                    .and_then(|b| b.context.clone())
+                                    .unwrap_or_else(|| {
+                                        features_build_info.empty_context_dir.display().to_string()
+                                    }),
                             ),
                             dockerfile: Some(dockerfile_path.display().to_string()),
                             args: Some(build_args),
@@ -1092,11 +1098,12 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${{PATH:-\3}}/g' /etc/profile || true
             .filter_map(|mount| {
                 if let Some(mount_type) = &mount.mount_type
                     && mount_type.to_lowercase() == "volume"
+                    && let Some(source) = &mount.source
                 {
                     Some((
-                        mount.source.clone(),
+                        source.clone(),
                         DockerComposeVolume {
-                            name: mount.source.clone(),
+                            name: source.clone(),
                         },
                     ))
                 } else {
@@ -1744,7 +1751,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
         };
 
         Ok(MountDefinition {
-            source: self.local_workspace_folder(),
+            source: Some(self.local_workspace_folder()),
             target: format!("/workspaces/{}", project_directory_name.display()),
             mount_type: None,
         })
@@ -3545,6 +3552,27 @@ ENV DOCKER_BUILDKIT=1
 "#
         );
 
+        let build_override = files
+            .iter()
+            .find(|f| {
+                f.file_name()
+                    .is_some_and(|s| s.display().to_string() == "docker_compose_build.json")
+            })
+            .expect("to be found");
+        let build_override = test_dependencies.fs.load(build_override).await.unwrap();
+        let build_config: DockerComposeConfig =
+            serde_json_lenient::from_str(&build_override).unwrap();
+        let build_context = build_config
+            .services
+            .get("app")
+            .and_then(|s| s.build.as_ref())
+            .and_then(|b| b.context.clone())
+            .expect("build override should have a context");
+        assert_eq!(
+            build_context, ".",
+            "build override should preserve the original build context from docker-compose.yml"
+        );
+
         let runtime_override = files
             .iter()
             .find(|f| {
@@ -3576,7 +3604,7 @@ ENV DOCKER_BUILDKIT=1
                         ])),
                         volumes: vec![
                             MountDefinition {
-                                source: "dind-var-lib-docker-42dad4b4ca7b8ced".to_string(),
+                                source: Some("dind-var-lib-docker-42dad4b4ca7b8ced".to_string()),
                                 target: "/var/lib/docker".to_string(),
                                 mount_type: Some("volume".to_string())
                             }
@@ -4644,7 +4672,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                                     additional_contexts: None,
                                 }),
                                 volumes: vec![MountDefinition {
-                                    source: "../..".to_string(),
+                                    source: Some("../..".to_string()),
                                     target: "/workspaces".to_string(),
                                     mount_type: Some("bind".to_string()),
                                 }],
@@ -4657,7 +4685,7 @@ RUN sed -i -E 's/((^|\s)PATH=)([^\$]*)$/\1\${PATH:-\3}/g' /etc/profile || true
                             DockerComposeService {
                                 image: Some("postgres:14.1".to_string()),
                                 volumes: vec![MountDefinition {
-                                    source: "postgres-data".to_string(),
+                                    source: Some("postgres-data".to_string()),
                                     target: "/var/lib/postgresql/data".to_string(),
                                     mount_type: Some("volume".to_string()),
                                 }],
