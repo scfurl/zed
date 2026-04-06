@@ -31,8 +31,18 @@ pub fn get_code(editor: &Editor, mode: GetCodeMode, cx: &mut App) -> Option<Code
 }
 
 /// Languages that have block-aware expansion (SendCode expands to full block).
+/// Returns true if the language has an eval.scm query or is a language with
+/// heuristic block expansion (Python, R, Julia).
 /// All other languages fall back to single-line behavior for SendCode.
 fn supports_block_expansion(language: &Language) -> bool {
+    // Check if the language has an eval.scm tree-sitter query
+    if language
+        .grammar()
+        .is_some_and(|g| g.eval_config.is_some())
+    {
+        return true;
+    }
+    // Heuristic fallback languages
     matches!(language.name().as_ref(), "Python" | "R" | "Julia")
 }
 
