@@ -1,5 +1,6 @@
 mod block_expander;
 mod code_getter;
+mod eval;
 mod settings;
 mod senders;
 
@@ -24,6 +25,10 @@ actions!(
         SendFile,
         /// Choose / cycle the send target.
         ChooseTarget,
+        /// Jump cursor to the start of the next eval region.
+        GotoNextEval,
+        /// Jump cursor to the start of the previous eval region.
+        GotoPrevEval,
     ]
 );
 
@@ -96,6 +101,30 @@ pub fn init(cx: &mut App) {
                             return;
                         }
                         send_file_action(editor_handle.clone(), window, cx);
+                    }
+                })
+                .detach();
+
+            editor
+                .register_action({
+                    let editor_handle = editor_handle.clone();
+                    move |_: &GotoNextEval, window, cx| {
+                        if !SendCodeSettings::enabled(cx) {
+                            return;
+                        }
+                        goto_next_eval_action(editor_handle.clone(), window, cx);
+                    }
+                })
+                .detach();
+
+            editor
+                .register_action({
+                    let editor_handle = editor_handle.clone();
+                    move |_: &GotoPrevEval, window, cx| {
+                        if !SendCodeSettings::enabled(cx) {
+                            return;
+                        }
+                        goto_prev_eval_action(editor_handle.clone(), window, cx);
                     }
                 })
                 .detach();
@@ -179,6 +208,64 @@ fn send_file_action(
     }
 }
 
+fn goto_next_eval_action(
+    editor: gpui::WeakEntity<Editor>,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) {
+    let Some(editor_entity) = editor.upgrade() else {
+        return;
+    };
+
+    editor_entity.update(cx, |editor, cx| {
+        let multibuffer = editor.buffer().clone();
+        let Some(buffer) = multibuffer.read(cx).as_singleton() else {
+            return;
+        };
+        let snapshot = buffer.read(cx).snapshot();
+        let display_snapshot = editor.display_snapshot(cx);
+        let selection = editor.selections.newest_adjusted(&display_snapshot);
+        let cursor = selection.head();
+
+        let evals = eval::all_evals(&snapshot);
+        if let Some(next) = evals.iter().find(|r| r.start > cursor) {
+            let target = next.start;
+            editor.change_selections(SelectionEffects::default(), window, cx, |s| {
+                s.select_ranges([target..target]);
+            });
+        }
+    });
+}
+
+fn goto_prev_eval_action(
+    editor: gpui::WeakEntity<Editor>,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) {
+    let Some(editor_entity) = editor.upgrade() else {
+        return;
+    };
+
+    editor_entity.update(cx, |editor, cx| {
+        let multibuffer = editor.buffer().clone();
+        let Some(buffer) = multibuffer.read(cx).as_singleton() else {
+            return;
+        };
+        let snapshot = buffer.read(cx).snapshot();
+        let display_snapshot = editor.display_snapshot(cx);
+        let selection = editor.selections.newest_adjusted(&display_snapshot);
+        let cursor = selection.head();
+
+        let evals = eval::all_evals(&snapshot);
+        if let Some(prev) = evals.iter().rev().find(|r| r.end < cursor) {
+            let target = prev.start;
+            editor.change_selections(SelectionEffects::default(), window, cx, |s| {
+                s.select_ranges([target..target]);
+            });
+        }
+    });
+}
+
 struct SendCodeDebugToast;
 
 fn send_payload(
@@ -224,6 +311,7 @@ fn send_payload(
         let target_clone = target.clone();
         let settings_clone = settings.clone();
         let workspace_clone = workspace.clone();
+        let lang_clone = language_name.clone();
 
         if let Some(ref ws) = workspace {
             let _ = ws.update(cx, |workspace, cx| {
@@ -234,6 +322,7 @@ fn send_payload(
                                 &text,
                                 &target_clone,
                                 &settings_clone,
+                                lang_clone.as_deref(),
                                 workspace_clone.as_ref(),
                                 cx,
                             );
@@ -249,6 +338,7 @@ fn send_payload(
         &payload.text,
         &target,
         &settings,
+        language_name.as_deref(),
         workspace.as_ref(),
         cx,
     );
