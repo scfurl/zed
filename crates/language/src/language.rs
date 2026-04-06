@@ -44,7 +44,7 @@ use futures::future::FutureExt as _;
 pub use language_core::{
     BlockCommentConfig, BracketPair, BracketPairConfig, BracketPairContent, BracketsConfig,
     BracketsPatternConfig, CodeLabel, CodeLabelBuilder, DebugVariablesConfig, DebuggerTextObject,
-    DecreaseIndentConfig, Grammar, GrammarId, HighlightsConfig, IndentConfig, InjectionConfig,
+    DecreaseIndentConfig, EvalConfig, Grammar, GrammarId, HighlightsConfig, IndentConfig, InjectionConfig,
     InjectionPatternConfig, JsxTagAutoCloseConfig, LanguageConfig, LanguageConfigOverride,
     LanguageId, LanguageMatcher, OrderedListConfig, OutlineConfig, Override, OverrideConfig,
     OverrideEntry, PromptResponseContext, RedactionConfig, RunnableCapture, RunnableConfig,
@@ -910,6 +910,10 @@ impl Language {
 
     pub fn with_runnable_query(self, source: &str) -> Result<Self> {
         self.with_grammar_query(|grammar| grammar.with_runnable_query(source))
+    }
+
+    pub fn with_eval_query(self, source: &str) -> Result<Self> {
+        self.with_grammar_query_and_name(|grammar, name| grammar.with_eval_query(source, name))
     }
 
     pub fn with_outline_query(self, source: &str) -> Result<Self> {

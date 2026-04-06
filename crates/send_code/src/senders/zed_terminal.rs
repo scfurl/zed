@@ -4,8 +4,6 @@ use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
 use workspace::Workspace;
 
 pub fn send(text: &str, use_bracketed_paste: bool, workspace: &WeakEntity<Workspace>, cx: &mut App) {
-    let text = text.to_string();
-
     let terminal = workspace
         .update(cx, |workspace, cx| find_active_terminal(workspace, cx))
         .ok()
@@ -16,6 +14,9 @@ pub fn send(text: &str, use_bracketed_paste: bool, workspace: &WeakEntity<Worksp
         return;
     };
 
+    // Count trailing newlines before trimming — we need to preserve extras
+    // (e.g. Python blocks need a trailing blank line to close the block in IPython).
+    let trailing_newlines = text.len() - text.trim_end_matches('\n').len();
     let text = text
         .trim_end_matches('\n')
         .trim_end_matches('\r')
@@ -29,10 +30,20 @@ pub fn send(text: &str, use_bracketed_paste: bool, workspace: &WeakEntity<Worksp
             let paste_text = format!("\x1b[200~{}\x1b[201~", sanitized);
             terminal.input(paste_text.into_bytes());
             terminal.input(b"\r".to_vec());
+            // Send extra Enter for each trailing newline beyond the first
+            // (e.g. Python's IPython needs a blank line to close multi-line blocks).
+            for _ in 1..trailing_newlines {
+                terminal.input(b"\r".to_vec());
+            }
         });
     } else {
         // Without bracketed paste, send line by line with delays so the
         // REPL can process each line before receiving the next one.
+        let extra_enters = if trailing_newlines > 1 {
+            trailing_newlines - 1
+        } else {
+            0
+        };
         let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
         cx.spawn({
             let terminal = terminal.downgrade();
@@ -46,10 +57,16 @@ pub fn send(text: &str, use_bracketed_paste: bool, workspace: &WeakEntity<Worksp
                         break;
                     };
                     // Small delay between lines so the REPL can process each one.
-                    // Skip delay after the last line.
                     if i < lines.len() - 1 {
                         smol::Timer::after(std::time::Duration::from_millis(50)).await;
                     }
+                }
+                // Send extra Enter(s) for Python block termination
+                for _ in 0..extra_enters {
+                    smol::Timer::after(std::time::Duration::from_millis(50)).await;
+                    let _ = terminal.update(cx, |terminal, _| {
+                        terminal.input(b"\r".to_vec());
+                    });
                 }
             }
         })

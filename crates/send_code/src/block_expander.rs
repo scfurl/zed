@@ -5,11 +5,18 @@ use language::{BufferSnapshot, Language, Point};
 use crate::code_getter::expand_paragraph;
 
 /// Expand the cursor position to a language-aware block range.
+/// Tries eval.scm tree-sitter query first, falls back to heuristics.
 pub fn expand_block(
     buffer: &BufferSnapshot,
     cursor: Point,
     language: &Language,
 ) -> Range<Point> {
+    // 1. Try eval.scm query first
+    if let Some(range) = crate::eval::find_eval_at(buffer, cursor) {
+        return range;
+    }
+
+    // 2. Legacy heuristic fallback
     let name = language.name();
     match name.as_ref() {
         "Python" => expand_python(buffer, cursor),
