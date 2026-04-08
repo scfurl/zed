@@ -61,6 +61,7 @@ pub struct FakeGitRepositoryState {
     pub remotes: HashMap<String, String>,
     pub simulated_index_write_error_message: Option<String>,
     pub simulated_create_worktree_error: Option<String>,
+    pub simulated_graph_error: Option<String>,
     pub refs: HashMap<String, String>,
     pub graph_commits: Vec<Arc<InitialGraphCommitData>>,
     pub stash_entries: GitStash,
@@ -78,6 +79,7 @@ impl FakeGitRepositoryState {
             branches: Default::default(),
             simulated_index_write_error_message: Default::default(),
             simulated_create_worktree_error: Default::default(),
+            simulated_graph_error: None,
             refs: HashMap::from_iter([("HEAD".into(), "abc".into())]),
             merge_base_contents: Default::default(),
             oids: Default::default(),
@@ -1327,8 +1329,17 @@ impl GitRepository for FakeGitRepository {
         let fs = self.fs.clone();
         let dot_git_path = self.dot_git_path.clone();
         async move {
-            let graph_commits =
-                fs.with_git_state(&dot_git_path, false, |state| state.graph_commits.clone())?;
+            let (graph_commits, simulated_error) =
+                fs.with_git_state(&dot_git_path, false, |state| {
+                    (
+                        state.graph_commits.clone(),
+                        state.simulated_graph_error.clone(),
+                    )
+                })?;
+
+            if let Some(error) = simulated_error {
+                anyhow::bail!("{}", error);
+            }
 
             for chunk in graph_commits.chunks(GRAPH_CHUNK_SIZE) {
                 request_tx.send(chunk.to_vec()).await.ok();
@@ -1367,6 +1378,39 @@ impl GitRepository for FakeGitRepository {
 
     fn repair_worktrees(&self) -> BoxFuture<'_, Result<()>> {
         async { Ok(()) }.boxed()
+    }
+
+    fn stage_all_including_untracked(&self) -> BoxFuture<'_, Result<()>> {
+        let workdir_path = self.dot_git_path.parent().unwrap();
+        let git_files: Vec<(RepoPath, String)> = self
+            .fs
+            .files()
+            .iter()
+            .filter_map(|path| {
+                let repo_path = path.strip_prefix(workdir_path).ok()?;
+                if repo_path.starts_with(".git") {
+                    return None;
+                }
+                let content = self
+                    .fs
+                    .read_file_sync(path)
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())?;
+                let rel_path = RelPath::new(repo_path, PathStyle::local()).ok()?;
+                Some((RepoPath::from_rel_path(&rel_path), content))
+            })
+            .collect();
+
+        self.with_state_async(true, move |state| {
+            let fs_paths: HashSet<RepoPath> = git_files.iter().map(|(p, _)| p.clone()).collect();
+            for (path, content) in git_files {
+                state.index_contents.insert(path, content);
+            }
+            state
+                .index_contents
+                .retain(|path, _| fs_paths.contains(path));
+            Ok(())
+        })
     }
 
     fn set_trusted(&self, trusted: bool) {

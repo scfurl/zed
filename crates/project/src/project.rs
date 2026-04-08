@@ -143,6 +143,7 @@ use worktree::{CreatedEntry, Snapshot, Traversal};
 pub use worktree::{
     Entry, EntryKind, FS_WATCH_LATENCY, File, LocalWorktree, PathChange, ProjectEntryId,
     UpdatedEntriesSet, UpdatedGitRepositoriesSet, Worktree, WorktreeId, WorktreeSettings,
+    discover_root_repo_common_dir,
 };
 use worktree_store::{WorktreeStore, WorktreeStoreEvent};
 
@@ -4757,6 +4758,44 @@ impl Project {
         })
     }
 
+    /// Returns a task that resolves when the given worktree's `Entity` is
+    /// fully dropped (all strong references released), not merely when
+    /// `remove_worktree` is called. `remove_worktree` drops the store's
+    /// reference and emits `WorktreeRemoved`, but other code may still
+    /// hold a strong handle — the worktree isn't safe to delete from
+    /// disk until every handle is gone.
+    ///
+    /// We use `observe_release` on the specific entity rather than
+    /// listening for `WorktreeReleased` events because it's simpler at
+    /// the call site (one awaitable task, no subscription / channel /
+    /// ID filtering).
+    pub fn wait_for_worktree_release(
+        &mut self,
+        worktree_id: WorktreeId,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        let Some(worktree) = self.worktree_for_id(worktree_id, cx) else {
+            return Task::ready(Ok(()));
+        };
+
+        let (released_tx, released_rx) = futures::channel::oneshot::channel();
+        let released_tx = std::sync::Arc::new(Mutex::new(Some(released_tx)));
+        let release_subscription =
+            cx.observe_release(&worktree, move |_project, _released_worktree, _cx| {
+                if let Some(released_tx) = released_tx.lock().take() {
+                    let _ = released_tx.send(());
+                }
+            });
+
+        cx.spawn(async move |_project, _cx| {
+            let _release_subscription = release_subscription;
+            released_rx
+                .await
+                .map_err(|_| anyhow!("worktree release observer dropped before release"))?;
+            Ok(())
+        })
+    }
+
     pub fn remove_worktree(&mut self, id_to_remove: WorktreeId, cx: &mut Context<Self>) {
         self.worktree_store.update(cx, |worktree_store, cx| {
             worktree_store.remove_worktree(id_to_remove, cx);
@@ -6182,6 +6221,76 @@ impl<'a> Iterator for PathMatchCandidateSetIter<'a> {
                 is_dir: entry.kind.is_dir(),
                 path: &entry.path,
                 char_bag: entry.char_bag,
+            })
+    }
+}
+
+impl<'a> fuzzy_nucleo::PathMatchCandidateSet<'a> for PathMatchCandidateSet {
+    type Candidates = PathMatchCandidateSetNucleoIter<'a>;
+    fn id(&self) -> usize {
+        self.snapshot.id().to_usize()
+    }
+    fn len(&self) -> usize {
+        match self.candidates {
+            Candidates::Files => {
+                if self.include_ignored {
+                    self.snapshot.file_count()
+                } else {
+                    self.snapshot.visible_file_count()
+                }
+            }
+            Candidates::Directories => {
+                if self.include_ignored {
+                    self.snapshot.dir_count()
+                } else {
+                    self.snapshot.visible_dir_count()
+                }
+            }
+            Candidates::Entries => {
+                if self.include_ignored {
+                    self.snapshot.entry_count()
+                } else {
+                    self.snapshot.visible_entry_count()
+                }
+            }
+        }
+    }
+    fn prefix(&self) -> Arc<RelPath> {
+        if self.snapshot.root_entry().is_some_and(|e| e.is_file()) || self.include_root_name {
+            self.snapshot.root_name().into()
+        } else {
+            RelPath::empty().into()
+        }
+    }
+    fn root_is_file(&self) -> bool {
+        self.snapshot.root_entry().is_some_and(|f| f.is_file())
+    }
+    fn path_style(&self) -> PathStyle {
+        self.snapshot.path_style()
+    }
+    fn candidates(&'a self, start: usize) -> Self::Candidates {
+        PathMatchCandidateSetNucleoIter {
+            traversal: match self.candidates {
+                Candidates::Directories => self.snapshot.directories(self.include_ignored, start),
+                Candidates::Files => self.snapshot.files(self.include_ignored, start),
+                Candidates::Entries => self.snapshot.entries(self.include_ignored, start),
+            },
+        }
+    }
+}
+
+pub struct PathMatchCandidateSetNucleoIter<'a> {
+    traversal: Traversal<'a>,
+}
+
+impl<'a> Iterator for PathMatchCandidateSetNucleoIter<'a> {
+    type Item = fuzzy_nucleo::PathMatchCandidate<'a>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.traversal
+            .next()
+            .map(|entry| fuzzy_nucleo::PathMatchCandidate {
+                is_dir: entry.kind.is_dir(),
+                path: &entry.path,
             })
     }
 }

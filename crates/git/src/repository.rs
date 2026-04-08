@@ -959,6 +959,8 @@ pub trait GitRepository: Send + Sync {
 
     fn repair_worktrees(&self) -> BoxFuture<'_, Result<()>>;
 
+    fn stage_all_including_untracked(&self) -> BoxFuture<'_, Result<()>>;
+
     fn set_trusted(&self, trusted: bool);
     fn is_trusted(&self) -> bool;
 }
@@ -2269,6 +2271,18 @@ impl GitRepository for RealGitRepository {
             .boxed()
     }
 
+    fn stage_all_including_untracked(&self) -> BoxFuture<'_, Result<()>> {
+        let git_binary = self.git_binary();
+        self.executor
+            .spawn(async move {
+                let args: Vec<OsString> =
+                    vec!["--no-optional-locks".into(), "add".into(), "-A".into()];
+                git_binary?.run(&args).await?;
+                Ok(())
+            })
+            .boxed()
+    }
+
     fn push(
         &self,
         branch_name: String,
@@ -2784,10 +2798,11 @@ impl GitRepository for RealGitRepository {
                 log_source.get_arg()?,
             ]);
             command.stdout(Stdio::piped());
-            command.stderr(Stdio::null());
+            command.stderr(Stdio::piped());
 
             let mut child = command.spawn()?;
             let stdout = child.stdout.take().context("failed to get stdout")?;
+            let stderr = child.stderr.take().context("failed to get stderr")?;
             let mut reader = BufReader::new(stdout);
 
             let mut line_buffer = String::new();
@@ -2822,7 +2837,20 @@ impl GitRepository for RealGitRepository {
                 }
             }
 
-            child.status().await?;
+            let status = child.status().await?;
+            if !status.success() {
+                let mut stderr_output = String::new();
+                BufReader::new(stderr)
+                    .read_to_string(&mut stderr_output)
+                    .await
+                    .log_err();
+
+                if stderr_output.is_empty() {
+                    anyhow::bail!("git log command failed with {}", status);
+                } else {
+                    anyhow::bail!("git log command failed with {}: {}", status, stderr_output);
+                }
+            }
             Ok(())
         }
         .boxed()
