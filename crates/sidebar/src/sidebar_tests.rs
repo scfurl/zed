@@ -60,6 +60,75 @@ fn has_thread_entry(sidebar: &Sidebar, session_id: &acp::SessionId) -> bool {
         .any(|entry| matches!(entry, ListEntry::Thread(t) if &t.metadata.session_id == session_id))
 }
 
+#[track_caller]
+fn assert_remote_project_integration_sidebar_state(
+    sidebar: &mut Sidebar,
+    main_thread_id: &acp::SessionId,
+    remote_thread_id: &acp::SessionId,
+) {
+    let mut project_headers = sidebar.contents.entries.iter().filter_map(|entry| {
+        if let ListEntry::ProjectHeader { label, .. } = entry {
+            Some(label.as_ref())
+        } else {
+            None
+        }
+    });
+
+    let Some(project_header) = project_headers.next() else {
+        panic!("expected exactly one sidebar project header named `project`, found none");
+    };
+    assert_eq!(
+        project_header, "project",
+        "expected the only sidebar project header to be `project`"
+    );
+    if let Some(unexpected_header) = project_headers.next() {
+        panic!(
+            "expected exactly one sidebar project header named `project`, found extra header `{unexpected_header}`"
+        );
+    }
+
+    let mut saw_main_thread = false;
+    let mut saw_remote_thread = false;
+    for entry in &sidebar.contents.entries {
+        match entry {
+            ListEntry::ProjectHeader { label, .. } => {
+                assert_eq!(
+                    label.as_ref(),
+                    "project",
+                    "expected the only sidebar project header to be `project`"
+                );
+            }
+            ListEntry::Thread(thread) if &thread.metadata.session_id == main_thread_id => {
+                saw_main_thread = true;
+            }
+            ListEntry::Thread(thread) if &thread.metadata.session_id == remote_thread_id => {
+                saw_remote_thread = true;
+            }
+            ListEntry::Thread(thread) => {
+                let title = thread.metadata.title.as_ref();
+                panic!(
+                    "unexpected sidebar thread while simulating remote project integration flicker: title=`{title}`"
+                );
+            }
+            ListEntry::ViewMore { .. } => {
+                panic!(
+                    "unexpected `View More` entry while simulating remote project integration flicker"
+                );
+            }
+            ListEntry::DraftThread { .. } => {}
+        }
+    }
+
+    assert!(
+        saw_main_thread,
+        "expected the sidebar to keep showing `Main Thread` under `project`"
+    );
+    assert!(
+        saw_remote_thread,
+        "expected the sidebar to keep showing `Worktree Thread` under `project`"
+    );
+}
+
 async fn init_test_project(
     worktree_path: &str,
     cx: &mut TestAppContext,
@@ -176,6 +245,7 @@ fn save_thread_metadata(
             folder_paths,
             main_worktree_paths,
             archived: false,
+            remote_connection: None,
         };
         ThreadMetadataStore::global(cx).update(cx, |store, cx| store.save_manually(metadata, cx));
     });
@@ -260,7 +330,7 @@ fn visible_entries_as_strings(
                         highlight_positions: _,
                         ..
                     } => {
-                        let icon = if sidebar.collapsed_groups.contains(key.path_list()) {
+                        let icon = if sidebar.collapsed_groups.contains(key) {
                             ">"
                         } else {
                             "v"
@@ -296,13 +366,17 @@ fn visible_entries_as_strings(
                             format!("  + View More{}", selected)
                         }
                     }
-                    ListEntry::DraftThread { worktrees, .. } => {
+                    ListEntry::DraftThread {
+                        workspace,
+                        worktrees,
+                        ..
+                    } => {
                         let worktree = format_linked_worktree_chips(worktrees);
-                        format!("  [~ Draft{}]{}", worktree, selected)
-                    }
-                    ListEntry::NewThread { worktrees, .. } => {
-                        let worktree = format_linked_worktree_chips(worktrees);
-                        format!("  [+ New Thread{}]{}", worktree, selected)
+                        if workspace.is_some() {
+                            format!("  [+ New Thread{}]{}", worktree, selected)
+                        } else {
+                            format!("  [~ Draft{}]{}", worktree, selected)
+                        }
                     }
                 }
             })
@@ -319,15 +393,13 @@ async fn test_serialization_round_trip(cx: &mut TestAppContext) {
 
     save_n_test_threads(3, &project, cx).await;
 
-    let path_list = project.read_with(cx, |project, cx| {
-        project.project_group_key(cx).path_list().clone()
-    });
+    let project_group_key = project.read_with(cx, |project, cx| project.project_group_key(cx));
 
     // Set a custom width, collapse the group, and expand "View More".
     sidebar.update_in(cx, |sidebar, window, cx| {
         sidebar.set_width(Some(px(420.0)), cx);
-        sidebar.toggle_collapse(&path_list, window, cx);
-        sidebar.expanded_groups.insert(path_list.clone(), 2);
+        sidebar.toggle_collapse(&project_group_key, window, cx);
+        sidebar.expanded_groups.insert(project_group_key.clone(), 2);
     });
     cx.run_until_parked();
 
@@ -365,8 +437,8 @@ async fn test_serialization_round_trip(cx: &mut TestAppContext) {
     assert_eq!(collapsed1, collapsed2);
     assert_eq!(expanded1, expanded2);
     assert_eq!(width1, px(420.0));
-    assert!(collapsed1.contains(&path_list));
-    assert_eq!(expanded1.get(&path_list), Some(&2));
+    assert!(collapsed1.contains(&project_group_key));
+    assert_eq!(expanded1.get(&project_group_key), Some(&2));
 }
 
 #[gpui::test]
@@ -472,7 +544,7 @@ async fn test_single_workspace_no_threads(cx: &mut TestAppContext) {
 
     assert_eq!(
         visible_entries_as_strings(&sidebar, cx),
-        vec!["v [my-project]", "  [+ New Thread]"]
+        vec!["v [my-project]"]
     );
 }
 
@@ -589,9 +661,7 @@ async fn test_view_more_batched_expansion(cx: &mut TestAppContext) {
     // Create 17 threads: initially shows 5, then 10, then 15, then all 17 with Collapse
     save_n_test_threads(17, &project, cx).await;
 
-    let path_list = project.read_with(cx, |project, cx| {
-        project.project_group_key(cx).path_list().clone()
-    });
+    let project_group_key = project.read_with(cx, |project, cx| project.project_group_key(cx));
 
     multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
     cx.run_until_parked();
@@ -616,8 +686,13 @@ async fn test_view_more_batched_expansion(cx: &mut TestAppContext) {
 
     // Expand again by one batch
     sidebar.update_in(cx, |s, _window, cx| {
-        let current = s.expanded_groups.get(&path_list).copied().unwrap_or(0);
-        s.expanded_groups.insert(path_list.clone(), current + 1);
+        let current = s
+            .expanded_groups
+            .get(&project_group_key)
+            .copied()
+            .unwrap_or(0);
+        s.expanded_groups
+            .insert(project_group_key.clone(), current + 1);
         s.update_entries(cx);
     });
     cx.run_until_parked();
@@ -629,8 +704,13 @@ async fn test_view_more_batched_expansion(cx: &mut TestAppContext) {
 
     // Expand one more time - should show all 17 threads with Collapse button
     sidebar.update_in(cx, |s, _window, cx| {
-        let current = s.expanded_groups.get(&path_list).copied().unwrap_or(0);
-        s.expanded_groups.insert(path_list.clone(), current + 1);
+        let current = s
+            .expanded_groups
+            .get(&project_group_key)
+            .copied()
+            .unwrap_or(0);
+        s.expanded_groups
+            .insert(project_group_key.clone(), current + 1);
         s.update_entries(cx);
     });
     cx.run_until_parked();
@@ -643,7 +723,7 @@ async fn test_view_more_batched_expansion(cx: &mut TestAppContext) {
 
     // Click collapse - should go back to showing 5 threads
     sidebar.update_in(cx, |s, _window, cx| {
-        s.expanded_groups.remove(&path_list);
+        s.expanded_groups.remove(&project_group_key);
         s.update_entries(cx);
     });
     cx.run_until_parked();
@@ -663,9 +743,7 @@ async fn test_collapse_and_expand_group(cx: &mut TestAppContext) {
 
     save_n_test_threads(1, &project, cx).await;
 
-    let path_list = project.read_with(cx, |project, cx| {
-        project.project_group_key(cx).path_list().clone()
-    });
+    let project_group_key = project.read_with(cx, |project, cx| project.project_group_key(cx));
 
     multi_workspace.update_in(cx, |_, _window, cx| cx.notify());
     cx.run_until_parked();
@@ -677,7 +755,7 @@ async fn test_collapse_and_expand_group(cx: &mut TestAppContext) {
 
     // Collapse
     sidebar.update_in(cx, |s, window, cx| {
-        s.toggle_collapse(&path_list, window, cx);
+        s.toggle_collapse(&project_group_key, window, cx);
     });
     cx.run_until_parked();
 
@@ -688,7 +766,7 @@ async fn test_collapse_and_expand_group(cx: &mut TestAppContext) {
 
     // Expand
     sidebar.update_in(cx, |s, window, cx| {
-        s.toggle_collapse(&path_list, window, cx);
+        s.toggle_collapse(&project_group_key, window, cx);
     });
     cx.run_until_parked();
 
@@ -710,7 +788,8 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
     let collapsed_path = PathList::new(&[std::path::PathBuf::from("/collapsed")]);
 
     sidebar.update_in(cx, |s, _window, _cx| {
-        s.collapsed_groups.insert(collapsed_path.clone());
+        s.collapsed_groups
+            .insert(project::ProjectGroupKey::new(None, collapsed_path.clone()));
         s.contents
             .notified_threads
             .insert(acp::SessionId::new(Arc::from("t-5")));
@@ -723,6 +802,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                 has_running_threads: false,
                 waiting_thread_count: 0,
                 is_active: true,
+                has_threads: true,
             },
             ListEntry::Thread(ThreadEntry {
                 metadata: ThreadMetadata {
@@ -734,6 +814,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                     updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
                     archived: false,
+                    remote_connection: None,
                 },
                 icon: IconName::ZedAgent,
                 icon_from_external_svg: None,
@@ -757,6 +838,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                     updated_at: Utc::now(),
                     created_at: Some(Utc::now()),
                     archived: false,
+                    remote_connection: None,
                 },
                 icon: IconName::ZedAgent,
                 icon_from_external_svg: None,
@@ -774,6 +856,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                 metadata: ThreadMetadata {
                     session_id: acp::SessionId::new(Arc::from("t-3")),
                     agent_id: AgentId::new("zed-agent"),
+                    remote_connection: None,
                     folder_paths: PathList::default(),
                     main_worktree_paths: PathList::default(),
                     title: "Error thread".into(),
@@ -793,10 +876,12 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                 diff_stats: DiffStats::default(),
             }),
             // Thread with WaitingForConfirmation status, not active
+            // remote_connection: None,
             ListEntry::Thread(ThreadEntry {
                 metadata: ThreadMetadata {
                     session_id: acp::SessionId::new(Arc::from("t-4")),
                     agent_id: AgentId::new("zed-agent"),
+                    remote_connection: None,
                     folder_paths: PathList::default(),
                     main_worktree_paths: PathList::default(),
                     title: "Waiting thread".into(),
@@ -816,10 +901,12 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                 diff_stats: DiffStats::default(),
             }),
             // Background thread that completed (should show notification)
+            // remote_connection: None,
             ListEntry::Thread(ThreadEntry {
                 metadata: ThreadMetadata {
                     session_id: acp::SessionId::new(Arc::from("t-5")),
                     agent_id: AgentId::new("zed-agent"),
+                    remote_connection: None,
                     folder_paths: PathList::default(),
                     main_worktree_paths: PathList::default(),
                     title: "Notified thread".into(),
@@ -851,6 +938,7 @@ async fn test_visible_entries_as_strings(cx: &mut TestAppContext) {
                 has_running_threads: false,
                 waiting_thread_count: 0,
                 is_active: false,
+                has_threads: false,
             },
         ];
 
@@ -1170,10 +1258,10 @@ async fn test_keyboard_navigation_on_empty_list(cx: &mut TestAppContext) {
         cx.add_window_view(|window, cx| MultiWorkspace::test_new(project, window, cx));
     let sidebar = setup_sidebar(&multi_workspace, cx);
 
-    // An empty project has the header and a new thread button.
+    // An empty project has only the header.
     assert_eq!(
         visible_entries_as_strings(&sidebar, cx),
-        vec!["v [empty-project]", "  [+ New Thread]"]
+        vec!["v [empty-project]"]
     );
 
     // Focus sidebar — focus_in does not set a selection
@@ -1184,11 +1272,7 @@ async fn test_keyboard_navigation_on_empty_list(cx: &mut TestAppContext) {
     cx.dispatch_action(SelectNext);
     assert_eq!(sidebar.read_with(cx, |s, _| s.selection), Some(0));
 
-    // SelectNext moves to the new thread button
-    cx.dispatch_action(SelectNext);
-    assert_eq!(sidebar.read_with(cx, |s, _| s.selection), Some(1));
-
-    // At the end, wraps back to first entry
+    // At the end (only one entry), wraps back to first entry
     cx.dispatch_action(SelectNext);
     assert_eq!(sidebar.read_with(cx, |s, _| s.selection), Some(0));
 
@@ -2010,7 +2094,8 @@ async fn test_click_clears_selection_and_focus_in_restores_it(cx: &mut TestAppCo
     sidebar.update_in(cx, |sidebar, window, cx| {
         sidebar.selection = None;
         let path_list = PathList::new(&[std::path::PathBuf::from("/my-project")]);
-        sidebar.toggle_collapse(&path_list, window, cx);
+        let project_group_key = project::ProjectGroupKey::new(None, path_list);
+        sidebar.toggle_collapse(&project_group_key, window, cx);
     });
     assert_eq!(sidebar.read_with(cx, |sidebar, _| sidebar.selection), None);
 
@@ -2120,6 +2205,7 @@ async fn test_focused_thread_tracks_user_intent(cx: &mut TestAppContext) {
                 folder_paths: PathList::default(),
                 main_worktree_paths: PathList::default(),
                 archived: false,
+                remote_connection: None,
             },
             &workspace_a,
             false,
@@ -2176,6 +2262,7 @@ async fn test_focused_thread_tracks_user_intent(cx: &mut TestAppContext) {
                 folder_paths: PathList::default(),
                 main_worktree_paths: PathList::default(),
                 archived: false,
+                remote_connection: None,
             },
             &workspace_b,
             false,
@@ -2689,7 +2776,7 @@ async fn test_git_worktree_added_live_updates_sidebar(cx: &mut TestAppContext) {
     // Thread is not visible yet — no worktree knows about this path.
     assert_eq!(
         visible_entries_as_strings(&sidebar, cx),
-        vec!["v [project]", "  [+ New Thread]"]
+        vec!["v [project]"]
     );
 
     // Now add the worktree to the git state and trigger a rescan.
@@ -3436,7 +3523,7 @@ async fn test_clicking_worktree_thread_does_not_briefly_render_as_separate_proje
                 ListEntry::ViewMore { .. } => {
                     panic!("unexpected `View More` entry while opening linked worktree thread");
                 }
-                ListEntry::DraftThread { .. } | ListEntry::NewThread { .. } => {}
+                ListEntry::DraftThread { .. } => {}
             }
         }
 
@@ -3615,6 +3702,7 @@ async fn test_activate_archived_thread_with_saved_paths_activates_matching_works
                 folder_paths: PathList::new(&[PathBuf::from("/project-b")]),
                 main_worktree_paths: PathList::default(),
                 archived: false,
+                remote_connection: None,
             },
             window,
             cx,
@@ -3680,6 +3768,7 @@ async fn test_activate_archived_thread_cwd_fallback_with_matching_workspace(
                 folder_paths: PathList::new(&[std::path::PathBuf::from("/project-b")]),
                 main_worktree_paths: PathList::default(),
                 archived: false,
+                remote_connection: None,
             },
             window,
             cx,
@@ -3743,6 +3832,7 @@ async fn test_activate_archived_thread_no_paths_no_cwd_uses_active_workspace(
                 folder_paths: PathList::default(),
                 main_worktree_paths: PathList::default(),
                 archived: false,
+                remote_connection: None,
             },
             window,
             cx,
@@ -3798,6 +3888,7 @@ async fn test_activate_archived_thread_saved_paths_opens_new_workspace(cx: &mut 
                 folder_paths: path_list_b,
                 main_worktree_paths: PathList::default(),
                 archived: false,
+                remote_connection: None,
             },
             window,
             cx,
@@ -3852,6 +3943,7 @@ async fn test_activate_archived_thread_reuses_workspace_in_another_window(cx: &m
                 folder_paths: PathList::new(&[PathBuf::from("/project-b")]),
                 main_worktree_paths: PathList::default(),
                 archived: false,
+                remote_connection: None,
             },
             window,
             cx,
@@ -3929,6 +4021,7 @@ async fn test_activate_archived_thread_reuses_workspace_in_another_window_with_t
                 folder_paths: PathList::new(&[PathBuf::from("/project-b")]),
                 main_worktree_paths: PathList::default(),
                 archived: false,
+                remote_connection: None,
             },
             window,
             cx,
@@ -4009,6 +4102,7 @@ async fn test_activate_archived_thread_prefers_current_window_for_matching_paths
                 folder_paths: PathList::new(&[PathBuf::from("/project-a")]),
                 main_worktree_paths: PathList::default(),
                 archived: false,
+                remote_connection: None,
             },
             window,
             cx,
@@ -4307,11 +4401,10 @@ async fn test_archive_last_worktree_thread_removes_workspace(cx: &mut TestAppCon
         sidebar.archive_thread(&wt_thread_id, window, cx);
     });
 
-    // archive_thread spawns a chain of tasks:
-    //   1. cx.spawn_in for workspace removal (awaits mw.remove())
-    //   2. start_archive_worktree_task spawns cx.spawn for git persist + disk removal
-    //   3. persist/remove do background_spawn work internally
-    // Each layer needs run_until_parked to drive to completion.
+    // archive_thread spawns a multi-layered chain of tasks (workspace
+    // removal → git persist → disk removal), each of which may spawn
+    // further background work. Each run_until_parked() call drives one
+    // layer of pending work.
     cx.run_until_parked();
     cx.run_until_parked();
     cx.run_until_parked();
@@ -4420,7 +4513,6 @@ async fn test_linked_worktree_threads_not_duplicated_across_groups(cx: &mut Test
         visible_entries_as_strings(&sidebar, cx),
         vec![
             "v [other, project]",
-            "  [+ New Thread]",
             "v [project]",
             "  Worktree Thread {wt-feature-a}",
         ]
@@ -5484,7 +5576,7 @@ async fn test_archive_thread_on_linked_worktree_selects_sibling_thread(cx: &mut 
 #[gpui::test]
 async fn test_linked_worktree_workspace_reachable_and_dismissable(cx: &mut TestAppContext) {
     // When a linked worktree is opened as its own workspace and the user
-    // switches away, the workspace must still be reachable from a NewThread
+    // switches away, the workspace must still be reachable from a DraftThread
     // sidebar entry. Pressing RemoveSelectedThread (shift-backspace) on that
     // entry should remove the workspace.
     init_test(cx);
@@ -5579,7 +5671,7 @@ async fn test_linked_worktree_workspace_reachable_and_dismissable(cx: &mut TestA
         "linked worktree workspace should be reachable, but reachable are: {reachable:?}"
     );
 
-    // Find the NewThread entry for the linked worktree and dismiss it.
+    // Find the DraftThread entry for the linked worktree and dismiss it.
     let new_thread_ix = sidebar.read_with(cx, |sidebar, _| {
         sidebar
             .contents
@@ -5588,13 +5680,13 @@ async fn test_linked_worktree_workspace_reachable_and_dismissable(cx: &mut TestA
             .position(|entry| {
                 matches!(
                     entry,
-                    ListEntry::NewThread {
+                    ListEntry::DraftThread {
                         workspace: Some(_),
                         ..
                     }
                 )
             })
-            .expect("expected a NewThread entry for the linked worktree")
+            .expect("expected a DraftThread entry for the linked worktree")
     });
 
     assert_eq!(
@@ -5611,7 +5703,7 @@ async fn test_linked_worktree_workspace_reachable_and_dismissable(cx: &mut TestA
     assert_eq!(
         multi_workspace.read_with(cx, |mw, _| mw.workspaces().count()),
         1,
-        "linked worktree workspace should be removed after dismissing NewThread entry"
+        "linked worktree workspace should be removed after dismissing DraftThread entry"
     );
 }
 
@@ -5931,6 +6023,7 @@ async fn test_legacy_thread_with_canonical_path_opens_main_repo_workspace(cx: &m
             folder_paths: PathList::new(&[PathBuf::from("/project")]),
             main_worktree_paths: PathList::default(),
             archived: false,
+            remote_connection: None,
         };
         ThreadMetadataStore::global(cx).update(cx, |store, cx| store.save_manually(metadata, cx));
     });
@@ -5975,6 +6068,175 @@ async fn test_legacy_thread_with_canonical_path_opens_main_repo_workspace(cx: &m
         new_path_list,
         PathList::new(&[PathBuf::from("/project")]),
         "the new workspace should be for the main repo, not the linked worktree",
+    );
+}
+
+#[gpui::test]
+async fn test_linked_worktree_workspace_reachable_after_adding_unrelated_project(
+    cx: &mut TestAppContext,
+) {
+    // Regression test for a property-test finding:
+    //   AddLinkedWorktree { project_group_index: 0 }
+    //   AddProject { use_worktree: true }
+    //   AddProject { use_worktree: false }
+    // After these three steps, the linked-worktree workspace was not
+    // reachable from any sidebar entry.
+    agent_ui::test_support::init_test(cx);
+    cx.update(|cx| {
+        ThreadStore::init_global(cx);
+        ThreadMetadataStore::init_global(cx);
+        language_model::LanguageModelRegistry::test(cx);
+        prompt_store::init(cx);
+
+        cx.observe_new(
+            |workspace: &mut Workspace,
+             window: Option<&mut Window>,
+             cx: &mut gpui::Context<Workspace>| {
+                if let Some(window) = window {
+                    let panel = cx.new(|cx| AgentPanel::test_new(workspace, window, cx));
+                    workspace.add_panel(panel, window, cx);
+                }
+            },
+        )
+        .detach();
+    });
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        "/my-project",
+        serde_json::json!({
+            ".git": {},
+            "src": {},
+        }),
+    )
+    .await;
+    cx.update(|cx| <dyn fs::Fs>::set_global(fs.clone(), cx));
+    let project =
+        project::Project::test(fs.clone() as Arc<dyn fs::Fs>, ["/my-project".as_ref()], cx).await;
+    project.update(cx, |p, cx| p.git_scans_complete(cx)).await;
+
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+
+    // Step 1: Create a linked worktree for the main project.
+    let worktree_name = "wt-0";
+    let worktree_path = "/worktrees/wt-0";
+
+    fs.insert_tree(
+        worktree_path,
+        serde_json::json!({
+            ".git": "gitdir: /my-project/.git/worktrees/wt-0",
+            "src": {},
+        }),
+    )
+    .await;
+    fs.insert_tree(
+        "/my-project/.git/worktrees/wt-0",
+        serde_json::json!({
+            "commondir": "../../",
+            "HEAD": "ref: refs/heads/wt-0",
+        }),
+    )
+    .await;
+    fs.add_linked_worktree_for_repo(
+        Path::new("/my-project/.git"),
+        false,
+        git::repository::Worktree {
+            path: PathBuf::from(worktree_path),
+            ref_name: Some(format!("refs/heads/{}", worktree_name).into()),
+            sha: "aaa".into(),
+            is_main: false,
+        },
+    )
+    .await;
+
+    let main_workspace = multi_workspace.read_with(cx, |mw, _| mw.workspace().clone());
+    let main_project = main_workspace.read_with(cx, |ws, _| ws.project().clone());
+    main_project
+        .update(cx, |p, cx| p.git_scans_complete(cx))
+        .await;
+    cx.run_until_parked();
+
+    // Step 2: Open the linked worktree as its own workspace.
+    let worktree_project =
+        project::Project::test(fs.clone() as Arc<dyn fs::Fs>, [worktree_path.as_ref()], cx).await;
+    worktree_project
+        .update(cx, |p, cx| p.git_scans_complete(cx))
+        .await;
+    let worktree_workspace = multi_workspace.update_in(cx, |mw, window, cx| {
+        mw.test_add_workspace(worktree_project.clone(), window, cx)
+    });
+    cx.run_until_parked();
+
+    // Step 3: Add an unrelated project.
+    fs.insert_tree(
+        "/other-project",
+        serde_json::json!({
+            ".git": {},
+            "src": {},
+        }),
+    )
+    .await;
+    let other_project = project::Project::test(
+        fs.clone() as Arc<dyn fs::Fs>,
+        ["/other-project".as_ref()],
+        cx,
+    )
+    .await;
+    other_project
+        .update(cx, |p, cx| p.git_scans_complete(cx))
+        .await;
+    multi_workspace.update_in(cx, |mw, window, cx| {
+        mw.test_add_workspace(other_project.clone(), window, cx);
+    });
+    cx.run_until_parked();
+
+    // Force a full sidebar rebuild with all groups expanded.
+    sidebar.update_in(cx, |sidebar, _window, cx| {
+        sidebar.collapsed_groups.clear();
+        let group_keys: Vec<project::ProjectGroupKey> = sidebar
+            .contents
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                ListEntry::ProjectHeader { key, .. } => Some(key.clone()),
+                _ => None,
+            })
+            .collect();
+        for group_key in group_keys {
+            sidebar.expanded_groups.insert(group_key, 10_000);
+        }
+        sidebar.update_entries(cx);
+    });
+    cx.run_until_parked();
+
+    // The linked-worktree workspace must be reachable from at least one
+    // sidebar entry — otherwise the user has no way to navigate to it.
+    let worktree_ws_id = worktree_workspace.entity_id();
+    let (all_ids, reachable_ids) = sidebar.read_with(cx, |sidebar, cx| {
+        let mw = multi_workspace.read(cx);
+
+        let all: HashSet<gpui::EntityId> = mw.workspaces().map(|ws| ws.entity_id()).collect();
+        let reachable: HashSet<gpui::EntityId> = sidebar
+            .contents
+            .entries
+            .iter()
+            .flat_map(|entry| entry.reachable_workspaces(mw, cx))
+            .map(|ws| ws.entity_id())
+            .collect();
+        (all, reachable)
+    });
+
+    let unreachable = &all_ids - &reachable_ids;
+    eprintln!("{}", visible_entries_as_strings(&sidebar, cx).join("\n"));
+
+    assert!(
+        unreachable.is_empty(),
+        "workspaces not reachable from any sidebar entry: {:?}\n\
+         (linked-worktree workspace id: {:?})",
+        unreachable,
+        worktree_ws_id,
     );
 }
 
@@ -6117,6 +6379,7 @@ mod property_test {
             folder_paths: path_list,
             main_worktree_paths,
             archived: false,
+            remote_connection: None,
         };
         cx.update(|_, cx| {
             ThreadMetadataStore::global(cx)
@@ -6236,6 +6499,7 @@ mod property_test {
                     mw.test_add_workspace(project.clone(), window, cx)
                 });
             }
+
             Operation::ArchiveThread { index } => {
                 let session_id = state.saved_thread_ids[index].clone();
                 sidebar.update_in(cx, |sidebar: &mut Sidebar, window, cx| {
@@ -6354,17 +6618,17 @@ mod property_test {
     fn update_sidebar(sidebar: &Entity<Sidebar>, cx: &mut gpui::VisualTestContext) {
         sidebar.update_in(cx, |sidebar, _window, cx| {
             sidebar.collapsed_groups.clear();
-            let path_lists: Vec<PathList> = sidebar
+            let group_keys: Vec<project::ProjectGroupKey> = sidebar
                 .contents
                 .entries
                 .iter()
                 .filter_map(|entry| match entry {
-                    ListEntry::ProjectHeader { key, .. } => Some(key.path_list().clone()),
+                    ListEntry::ProjectHeader { key, .. } => Some(key.clone()),
                     _ => None,
                 })
                 .collect();
-            for path_list in path_lists {
-                sidebar.expanded_groups.insert(path_list, 10_000);
+            for group_key in group_keys {
+                sidebar.expanded_groups.insert(group_key, 10_000);
             }
             sidebar.update_entries(cx);
         });
@@ -6600,18 +6864,20 @@ mod property_test {
             anyhow::bail!("sidebar should still have an associated multi-workspace");
         };
 
-        let mw = multi_workspace.read(cx);
+        let multi_workspace = multi_workspace.read(cx);
 
         let reachable_workspaces: HashSet<gpui::EntityId> = sidebar
             .contents
             .entries
             .iter()
-            .flat_map(|entry| entry.reachable_workspaces(mw, cx))
+            .flat_map(|entry| entry.reachable_workspaces(multi_workspace, cx))
             .map(|ws| ws.entity_id())
             .collect();
 
-        let all_workspace_ids: HashSet<gpui::EntityId> =
-            mw.workspaces().map(|ws| ws.entity_id()).collect();
+        let all_workspace_ids: HashSet<gpui::EntityId> = multi_workspace
+            .workspaces()
+            .map(|ws| ws.entity_id())
+            .collect();
 
         let unreachable = &all_workspace_ids - &reachable_workspaces;
 
@@ -6628,7 +6894,6 @@ mod property_test {
         cases: 50,
         ..Default::default()
     })]
-    #[ignore = "temporarily disabled to unblock PRs from landing"]
     async fn test_sidebar_invariants(
         #[strategy = gpui::proptest::collection::vec(0u32..DISTRIBUTION_SLOTS * 10, 1..5)]
         raw_operations: Vec<u32>,
@@ -6700,4 +6965,296 @@ mod property_test {
             }
         }
     }
+}
+
+#[gpui::test]
+async fn test_remote_project_integration_does_not_briefly_render_as_separate_project(
+    cx: &mut TestAppContext,
+    server_cx: &mut TestAppContext,
+) {
+    init_test(cx);
+
+    cx.update(|cx| {
+        release_channel::init(semver::Version::new(0, 0, 0), cx);
+    });
+
+    let app_state = cx.update(|cx| {
+        let app_state = workspace::AppState::test(cx);
+        workspace::init(app_state.clone(), cx);
+        app_state
+    });
+
+    // Set up the remote server side.
+    let server_fs = FakeFs::new(server_cx.executor());
+    server_fs
+        .insert_tree(
+            "/project",
+            serde_json::json!({
+                ".git": {},
+                "src": { "main.rs": "fn main() {}" }
+            }),
+        )
+        .await;
+    server_fs.set_branch_name(Path::new("/project/.git"), Some("main"));
+
+    // Create the linked worktree checkout path on the remote server,
+    // but do not yet register it as a git-linked worktree. The real
+    // regrouping update in this test should happen only after the
+    // sidebar opens the closed remote thread.
+    server_fs
+        .insert_tree(
+            "/project-wt-1",
+            serde_json::json!({
+                "src": { "main.rs": "fn main() {}" }
+            }),
+        )
+        .await;
+
+    server_cx.update(|cx| {
+        release_channel::init(semver::Version::new(0, 0, 0), cx);
+    });
+
+    let (original_opts, server_session, _) = remote::RemoteClient::fake_server(cx, server_cx);
+
+    server_cx.update(remote_server::HeadlessProject::init);
+    let server_executor = server_cx.executor();
+    let _headless = server_cx.new(|cx| {
+        remote_server::HeadlessProject::new(
+            remote_server::HeadlessAppState {
+                session: server_session,
+                fs: server_fs.clone(),
+                http_client: Arc::new(http_client::BlockedHttpClient),
+                node_runtime: node_runtime::NodeRuntime::unavailable(),
+                languages: Arc::new(language::LanguageRegistry::new(server_executor.clone())),
+                extension_host_proxy: Arc::new(extension::ExtensionHostProxy::new()),
+                startup_time: std::time::Instant::now(),
+            },
+            false,
+            cx,
+        )
+    });
+
+    // Connect the client side and build a remote project.
+    let remote_client = remote::RemoteClient::connect_mock(original_opts.clone(), cx).await;
+    let project = cx.update(|cx| {
+        let project_client = client::Client::new(
+            Arc::new(clock::FakeSystemClock::new()),
+            http_client::FakeHttpClient::with_404_response(),
+            cx,
+        );
+        let user_store = cx.new(|cx| client::UserStore::new(project_client.clone(), cx));
+        project::Project::remote(
+            remote_client,
+            project_client,
+            node_runtime::NodeRuntime::unavailable(),
+            user_store,
+            app_state.languages.clone(),
+            app_state.fs.clone(),
+            false,
+            cx,
+        )
+    });
+
+    // Open the remote worktree.
+    project
+        .update(cx, |project, cx| {
+            project.find_or_create_worktree(Path::new("/project"), true, cx)
+        })
+        .await
+        .expect("should open remote worktree");
+    cx.run_until_parked();
+
+    // Verify the project is remote.
+    project.read_with(cx, |project, cx| {
+        assert!(!project.is_local(), "project should be remote");
+        assert!(
+            project.remote_connection_options(cx).is_some(),
+            "project should have remote connection options"
+        );
+    });
+
+    cx.update(|cx| <dyn fs::Fs>::set_global(app_state.fs.clone(), cx));
+
+    // Create MultiWorkspace with the remote project.
+    let (multi_workspace, cx) =
+        cx.add_window_view(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let sidebar = setup_sidebar(&multi_workspace, cx);
+
+    cx.run_until_parked();
+
+    // Save a thread for the main remote workspace (folder_paths match
+    // the open workspace, so it will be classified as Open).
+    let main_thread_id = acp::SessionId::new(Arc::from("main-thread"));
+    save_thread_metadata(
+        main_thread_id.clone(),
+        "Main Thread".into(),
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 0, 0, 0).unwrap(),
+        None,
+        &project,
+        cx,
+    );
+    cx.run_until_parked();
+
+    // Save a thread whose folder_paths point to a linked worktree path
+    // that doesn't have an open workspace ("/project-wt-1"), but whose
+    // main_worktree_paths match the project group key so it appears
+    // in the sidebar under the same remote group. This simulates a
+    // linked worktree workspace that was closed.
+    let remote_thread_id = acp::SessionId::new(Arc::from("remote-thread"));
+    let main_worktree_paths =
+        project.read_with(cx, |p, cx| p.project_group_key(cx).path_list().clone());
+    cx.update(|_window, cx| {
+        let metadata = ThreadMetadata {
+            session_id: remote_thread_id.clone(),
+            agent_id: agent::ZED_AGENT_ID.clone(),
+            title: "Worktree Thread".into(),
+            updated_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 0, 0, 1).unwrap(),
+            created_at: None,
+            folder_paths: PathList::new(&[PathBuf::from("/project-wt-1")]),
+            main_worktree_paths,
+            archived: false,
+            remote_connection: None,
+        };
+        ThreadMetadataStore::global(cx).update(cx, |store, cx| store.save_manually(metadata, cx));
+    });
+    cx.run_until_parked();
+
+    focus_sidebar(&sidebar, cx);
+    sidebar.update_in(cx, |sidebar, _window, _cx| {
+        sidebar.selection = sidebar.contents.entries.iter().position(|entry| {
+            matches!(
+                entry,
+                ListEntry::Thread(thread) if thread.metadata.session_id == remote_thread_id
+            )
+        });
+    });
+
+    let saw_separate_project_header = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let saw_separate_project_header_for_observer = saw_separate_project_header.clone();
+
+    sidebar
+        .update(cx, |_, cx| {
+            cx.observe_self(move |sidebar, _cx| {
+                let mut project_headers = sidebar.contents.entries.iter().filter_map(|entry| {
+                    if let ListEntry::ProjectHeader { label, .. } = entry {
+                        Some(label.as_ref())
+                    } else {
+                        None
+                    }
+                });
+
+                let Some(project_header) = project_headers.next() else {
+                    saw_separate_project_header_for_observer
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    return;
+                };
+
+                if project_header != "project" || project_headers.next().is_some() {
+                    saw_separate_project_header_for_observer
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+            })
+        })
+        .detach();
+
+    multi_workspace.update(cx, |multi_workspace, cx| {
+        let workspace = multi_workspace.workspace().clone();
+        workspace.update(cx, |workspace: &mut Workspace, cx| {
+            let remote_client = workspace
+                .project()
+                .read(cx)
+                .remote_client()
+                .expect("main remote project should have a remote client");
+            remote_client.update(cx, |remote_client: &mut remote::RemoteClient, cx| {
+                remote_client.force_server_not_running(cx);
+            });
+        });
+    });
+    cx.run_until_parked();
+
+    let (server_session_2, connect_guard_2) =
+        remote::RemoteClient::fake_server_with_opts(&original_opts, cx, server_cx);
+    let _headless_2 = server_cx.new(|cx| {
+        remote_server::HeadlessProject::new(
+            remote_server::HeadlessAppState {
+                session: server_session_2,
+                fs: server_fs.clone(),
+                http_client: Arc::new(http_client::BlockedHttpClient),
+                node_runtime: node_runtime::NodeRuntime::unavailable(),
+                languages: Arc::new(language::LanguageRegistry::new(server_executor.clone())),
+                extension_host_proxy: Arc::new(extension::ExtensionHostProxy::new()),
+                startup_time: std::time::Instant::now(),
+            },
+            false,
+            cx,
+        )
+    });
+    drop(connect_guard_2);
+
+    let window = cx.windows()[0];
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_action(Confirm.boxed_clone(), cx);
+    })
+    .unwrap();
+
+    cx.run_until_parked();
+
+    let new_workspace = multi_workspace.read_with(cx, |mw, _| {
+        assert_eq!(
+            mw.workspaces().count(),
+            2,
+            "confirming a closed remote thread should open a second workspace"
+        );
+        mw.workspaces()
+            .find(|workspace| workspace.entity_id() != mw.workspace().entity_id())
+            .unwrap()
+            .clone()
+    });
+
+    server_fs
+        .add_linked_worktree_for_repo(
+            Path::new("/project/.git"),
+            true,
+            git::repository::Worktree {
+                path: PathBuf::from("/project-wt-1"),
+                ref_name: Some("refs/heads/feature-wt".into()),
+                sha: "abc123".into(),
+                is_main: false,
+            },
+        )
+        .await;
+
+    server_cx.run_until_parked();
+    cx.run_until_parked();
+    server_cx.run_until_parked();
+    cx.run_until_parked();
+
+    let entries_after_update = visible_entries_as_strings(&sidebar, cx);
+    let group_after_update = new_workspace.read_with(cx, |workspace, cx| {
+        workspace.project().read(cx).project_group_key(cx)
+    });
+
+    assert_eq!(
+        group_after_update,
+        project.read_with(cx, |project, cx| project.project_group_key(cx)),
+        "expected the remote worktree workspace to be grouped under the main remote project after the real update; \
+         final sidebar entries: {:?}",
+        entries_after_update,
+    );
+
+    sidebar.update(cx, |sidebar, _cx| {
+        assert_remote_project_integration_sidebar_state(
+            sidebar,
+            &main_thread_id,
+            &remote_thread_id,
+        );
+    });
+
+    assert!(
+        !saw_separate_project_header.load(std::sync::atomic::Ordering::SeqCst),
+        "sidebar briefly rendered the remote worktree as a separate project during the real remote open/update sequence; \
+         final group: {:?}; final sidebar entries: {:?}",
+        group_after_update,
+        entries_after_update,
+    );
 }
