@@ -1,3 +1,4 @@
+.zed/.github/
 sync-build-install.md
 **/*.db
 **/cargo-target
