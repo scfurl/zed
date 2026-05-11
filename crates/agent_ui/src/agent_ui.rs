@@ -1,10 +1,9 @@
 mod agent_configuration;
-pub(crate) mod agent_connection_store;
+pub mod agent_connection_store;
 mod agent_diff;
 mod agent_model_selector;
 mod agent_panel;
 mod agent_registry_ui;
-mod branch_names;
 mod buffer_codegen;
 mod completion_provider;
 mod config_options;
@@ -12,6 +11,7 @@ mod context;
 mod context_server_configuration;
 pub(crate) mod conversation_view;
 mod diagnostics;
+pub mod draft_prompt_store;
 mod entry_view_state;
 mod external_source_prompt;
 mod favorite_models;
@@ -28,22 +28,18 @@ mod terminal_codegen;
 mod terminal_inline_assistant;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-mod thread_branch_picker;
-mod thread_history;
-mod thread_history_view;
 mod thread_import;
 pub mod thread_metadata_store;
 pub mod thread_worktree_archive;
-mod thread_worktree_picker;
+
 pub mod threads_archive_view;
 mod ui;
 
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use ::ui::IconName;
-use agent_client_protocol as acp;
+use agent_client_protocol::schema as acp;
 use agent_settings::{AgentProfileId, AgentSettings};
 use command_palette_hooks::CommandPaletteFilter;
 use feature_flags::FeatureFlagAppExt as _;
@@ -65,31 +61,33 @@ use std::any::TypeId;
 use workspace::Workspace;
 
 use crate::agent_configuration::{ConfigureContextServerModal, ManageProfilesModal};
-pub use crate::agent_panel::{AgentPanel, AgentPanelEvent, DraftId, WorktreeCreationStatus};
+pub use crate::agent_connection_store::{ActiveAcpConnection, AgentConnectionStore};
+pub use crate::agent_panel::{
+    AgentPanel, AgentPanelEvent, AgentPanelTerminalInfo, MaxIdleRetainedThreads, TerminalId,
+};
 use crate::agent_registry_ui::AgentRegistryPage;
 pub use crate::inline_assistant::InlineAssistant;
+pub use crate::thread_metadata_store::ThreadId;
 pub use agent_diff::{AgentDiffPane, AgentDiffToolbar};
 pub use conversation_view::ConversationView;
 pub use external_source_prompt::ExternalSourcePrompt;
 pub(crate) use mode_selector::ModeSelector;
 pub(crate) use model_selector::ModelSelector;
 pub(crate) use model_selector_popover::ModelSelectorPopover;
-pub(crate) use thread_history::ThreadHistory;
-pub(crate) use thread_history_view::*;
-pub use thread_import::{AcpThreadImportOnboarding, ThreadImportModal};
+pub use thread_import::{
+    AcpThreadImportOnboarding, CrossChannelImportOnboarding, ThreadImportModal,
+    channels_with_threads, import_threads_from_other_channels,
+};
 use zed_actions;
+pub use zed_actions::{CreateWorktree, NewWorktreeBranchTarget, SwitchWorktree};
 
-pub const DEFAULT_THREAD_TITLE: &str = "New Thread";
+pub const DEFAULT_THREAD_TITLE: &str = "New Agent Thread";
 const PARALLEL_AGENT_LAYOUT_BACKFILL_KEY: &str = "parallel_agent_layout_backfilled";
 actions!(
     agent,
     [
         /// Toggles the menu to create new agent threads.
         ToggleNewThreadMenu,
-        /// Cycles through the options for where new threads start (current project or new worktree).
-        CycleStartThreadIn,
-        /// Toggles the navigation menu for switching between threads and views.
-        ToggleNavigationMenu,
         /// Toggles the options menu for agent settings and preferences.
         ToggleOptionsMenu,
         /// Toggles the profile or mode selector for switching between agent profiles.
@@ -100,12 +98,10 @@ actions!(
         CycleFavoriteModels,
         /// Expands the message editor to full size.
         ExpandMessageEditor,
-        /// Removes all thread history.
-        RemoveHistory,
-        /// Opens the conversation history view.
-        OpenHistory,
         /// Adds a context server to the configuration.
         AddContextServer,
+        /// Archives the currently selected thread.
+        ArchiveSelectedThread,
         /// Removes the currently selected thread.
         RemoveSelectedThread,
         /// Starts a chat conversation with follow-up enabled.
@@ -154,8 +150,6 @@ actions!(
         ResetTrialEndUpsell,
         /// Opens the "Add Context" menu in the message editor.
         OpenAddContextMenu,
-        /// Continues the current thread.
-        ContinueThread,
         /// Interrupts the current generation and sends the message immediately.
         SendImmediately,
         /// Sends the next queued message immediately.
@@ -192,6 +186,18 @@ actions!(
         ScrollOutputToPreviousMessage,
         /// Scroll the output to the next user message.
         ScrollOutputToNextMessage,
+        /// Import agent threads from other Zed release channels (e.g. Preview, Nightly).
+        ImportThreadsFromOtherChannels,
+    ]
+);
+
+actions!(
+    dev,
+    [
+        /// Shows metadata for the currently active thread.
+        ShowThreadMetadata,
+        /// Shows metadata for all threads in the sidebar.
+        ShowAllSidebarThreadMetadata,
     ]
 );
 
@@ -239,23 +245,45 @@ pub struct ToggleCommandPattern {
 pub struct NewThread;
 
 /// Creates a new external agent conversation thread.
-#[derive(Default, Clone, PartialEq, Deserialize, JsonSchema, Action)]
+#[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = agent)]
 #[serde(deny_unknown_fields)]
 pub struct NewExternalAgentThread {
-    /// Which agent to use for the conversation.
-    agent: Option<Agent>,
+    /// The agent id to use for the conversation.
+    #[serde(deserialize_with = "deserialize_external_agent_id")]
+    agent: AgentId,
+}
+
+fn deserialize_external_agent_id<'de, D>(deserializer: D) -> Result<AgentId, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum AgentIdOrLegacyAgent {
+        LegacyAgent(Agent),
+        AgentId(AgentId),
+    }
+
+    match AgentIdOrLegacyAgent::deserialize(deserializer)? {
+        AgentIdOrLegacyAgent::AgentId(agent_id) => Ok(agent_id),
+        AgentIdOrLegacyAgent::LegacyAgent(Agent::Custom { id }) => Ok(id),
+        AgentIdOrLegacyAgent::LegacyAgent(Agent::NativeAgent) => Ok(Agent::NativeAgent.id()),
+        #[cfg(any(test, feature = "test-support"))]
+        AgentIdOrLegacyAgent::LegacyAgent(Agent::Stub) => Ok(Agent::Stub.id()),
+    }
 }
 
 #[derive(Clone, PartialEq, Deserialize, JsonSchema, Action)]
 #[action(namespace = agent)]
 #[serde(deny_unknown_fields)]
 pub struct NewNativeAgentThreadFromSummary {
-    from_session_id: agent_client_protocol::SessionId,
+    from_session_id: acp::SessionId,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Agent {
     #[default]
     #[serde(alias = "NativeAgent", alias = "TextThread")]
@@ -265,15 +293,20 @@ pub enum Agent {
         #[serde(rename = "name")]
         id: AgentId,
     },
+    #[cfg(any(test, feature = "test-support"))]
+    Stub,
 }
 
 impl From<AgentId> for Agent {
     fn from(id: AgentId) -> Self {
         if id.as_ref() == agent::ZED_AGENT_ID.as_ref() {
-            Self::NativeAgent
-        } else {
-            Self::Custom { id }
+            return Self::NativeAgent;
         }
+        #[cfg(any(test, feature = "test-support"))]
+        if id.as_ref() == "stub" {
+            return Self::Stub;
+        }
+        Self::Custom { id }
     }
 }
 
@@ -282,6 +315,8 @@ impl Agent {
         match self {
             Self::NativeAgent => agent::ZED_AGENT_ID.clone(),
             Self::Custom { id } => id.clone(),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Stub => "stub".into(),
         }
     }
 
@@ -293,6 +328,8 @@ impl Agent {
         match self {
             Self::NativeAgent => "Zed Agent".into(),
             Self::Custom { id, .. } => id.0.clone(),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Stub => "Stub Agent".into(),
         }
     }
 
@@ -300,6 +337,8 @@ impl Agent {
         match self {
             Self::NativeAgent => None,
             Self::Custom { .. } => Some(IconName::Sparkle),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Stub => None,
         }
     }
 
@@ -313,46 +352,10 @@ impl Agent {
             Self::Custom { id: name } => {
                 Rc::new(agent_servers::CustomAgentServer::new(name.clone()))
             }
+            #[cfg(any(test, feature = "test-support"))]
+            Self::Stub => Rc::new(crate::test_support::StubAgentServer::default_response()),
         }
     }
-}
-
-/// Describes which branch to use when creating a new git worktree.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum NewWorktreeBranchTarget {
-    /// Create a new randomly named branch from the current HEAD.
-    /// Will match worktree name if the newly created worktree was also randomly named.
-    #[default]
-    CurrentBranch,
-    /// Check out an existing branch, or create a new branch from it if it's
-    /// already occupied by another worktree.
-    ExistingBranch { name: String },
-    /// Create a new branch with an explicit name, optionally from a specific ref.
-    CreateBranch {
-        name: String,
-        #[serde(default)]
-        from_ref: Option<String>,
-    },
-}
-
-/// Sets where new threads will run.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Action)]
-#[action(namespace = agent)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum StartThreadIn {
-    #[default]
-    LocalProject,
-    NewWorktree {
-        /// When this is None, Zed will randomly generate a worktree name
-        /// otherwise, the provided name will be used.
-        #[serde(default)]
-        worktree_name: Option<String>,
-        #[serde(default)]
-        branch_target: NewWorktreeBranchTarget,
-    },
-    /// A linked worktree that already exists on disk.
-    LinkedWorktree { path: PathBuf, display_name: String },
 }
 
 /// Content to initialize new external agent with.
@@ -362,7 +365,7 @@ pub enum AgentInitialContent {
         title: Option<SharedString>,
     },
     ContentBlock {
-        blocks: Vec<agent_client_protocol::ContentBlock>,
+        blocks: Vec<acp::ContentBlock>,
         auto_submit: bool,
     },
     FromExternalSource(ExternalSourcePrompt),
@@ -495,6 +498,17 @@ pub fn init(
     })
     .detach();
     cx.observe_new(ManageProfilesModal::register).detach();
+    cx.observe_new(|workspace: &mut Workspace, _window, _cx| {
+        workspace.register_action(
+            |workspace: &mut Workspace,
+             _: &ImportThreadsFromOtherChannels,
+             _window: &mut Window,
+             cx: &mut Context<Workspace>| {
+                import_threads_from_other_channels(workspace, cx);
+            },
+        );
+    })
+    .detach();
 
     // Update command palette filter based on AI settings
     update_command_palette_filter(cx);
@@ -596,8 +610,7 @@ fn update_command_palette_filter(cx: &mut App) {
                 | EditPredictionProvider::Codestral
                 | EditPredictionProvider::Ollama
                 | EditPredictionProvider::OpenAiCompatibleApi
-                | EditPredictionProvider::Mercury
-                | EditPredictionProvider::Experimental(_) => {
+                | EditPredictionProvider::Mercury => {
                     filter.show_namespace("edit_prediction");
                     filter.hide_namespace("copilot");
                     filter.show_action_types(edit_prediction_actions.iter());
@@ -606,9 +619,9 @@ fn update_command_palette_filter(cx: &mut App) {
 
             filter.show_namespace("zed_predict_onboarding");
             filter.show_action_types(&[TypeId::of::<zed_actions::OpenZedPredictOnboarding>()]);
-        }
 
-        filter.show_namespace("multi_workspace");
+            filter.show_namespace("multi_workspace");
+        }
     });
 }
 
@@ -702,8 +715,9 @@ mod tests {
             flexible: true,
             default_width: px(300.),
             default_height: px(600.),
-            max_content_width: px(850.),
+            max_content_width: Some(px(850.)),
             default_model: None,
+            subagent_model: None,
             inline_assistant_model: None,
             inline_assistant_use_streaming_tools: false,
             commit_message_model: None,
@@ -725,7 +739,6 @@ mod tests {
             tool_permissions: Default::default(),
             show_turn_stats: false,
             show_merge_conflict_indicator: true,
-            new_thread_location: Default::default(),
             sidebar_side: Default::default(),
             thinking_display: Default::default(),
         };
@@ -823,6 +836,7 @@ mod tests {
         .unwrap();
 
         cx.update(|cx| {
+            cx.set_global(db::AppDatabase::test_new());
             let store = SettingsStore::test(cx);
             cx.set_global(store);
             AgentSettings::register(cx);
@@ -918,5 +932,24 @@ mod tests {
                 id: "my-agent".into(),
             },
         );
+    }
+
+    #[test]
+    fn test_deserialize_new_external_agent_thread() {
+        let action = serde_json::from_str::<NewExternalAgentThread>(r#"{"agent":"gemini"}"#)
+            .expect("should deserialize agent id");
+        assert_eq!(action.agent, AgentId::from("gemini"));
+
+        let action = serde_json::from_str::<NewExternalAgentThread>(
+            r#"{"agent":{"custom":{"name":"gemini"}}}"#,
+        )
+        .expect("should deserialize legacy custom agent payload");
+        assert_eq!(action.agent, AgentId::from("gemini"));
+
+        let action = serde_json::from_str::<NewExternalAgentThread>(r#"{"agent":"NativeAgent"}"#)
+            .expect("should deserialize legacy native agent payload");
+        assert_eq!(action.agent, Agent::NativeAgent.id());
+
+        assert!(serde_json::from_str::<NewExternalAgentThread>(r#"{}"#).is_err());
     }
 }

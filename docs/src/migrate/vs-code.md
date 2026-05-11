@@ -59,6 +59,8 @@ The following VS Code settings are automatically imported when you use **Import 
 | `editor.cursorSurroundingLines`             | `vertical_scroll_margin`                       |
 | `editor.hover.enabled`                      | `hover_popover_enabled`                        |
 | `editor.hover.delay`                        | `hover_popover_delay`                          |
+| `editor.hover.sticky`                       | `hover_popover_sticky`                         |
+| `editor.hover.hidingDelay`                  | `hover_popover_hiding_delay`                   |
 | `editor.parameterHints.enabled`             | `auto_signature_help`                          |
 | `editor.multiCursorModifier`                | `multi_cursor_modifier`                        |
 | `editor.selectionHighlight`                 | `selection_highlight`                          |
@@ -164,11 +166,11 @@ The following VS Code settings are automatically imported when you use **Import 
 
 Zed doesn’t import extensions or keybindings, but this import gets core editor behavior close to your VS Code setup. If you skip that step during setup, you can still import settings manually later via the command palette:
 
-`Cmd+Shift+P → Zed: Import VS Code Settings`
+`Cmd+Shift+P → {#action zed::ImportVsCodeSettings}`
 
 ## Set Up Editor Preferences
 
-You can configure most settings in the Settings Editor ({#kb zed::OpenSettings}). For advanced settings, run `zed: open settings file` from the Command Palette to edit your settings file directly.
+You can configure most settings in the Settings Editor ({#kb zed::OpenSettings}). For advanced settings, run {#action zed::OpenSettingsFile} from the Command Palette to edit your settings file directly.
 
 Here’s how common VS Code settings translate:
 | VS Code | Zed | Notes |
@@ -242,7 +244,7 @@ Here’s a quick reference for where keybindings match and where they differ.
 To edit your keybindings:
 
 - Open the command palette (`Cmd+Shift+P`)
-- Run `Zed: Open Keymap Editor`
+- Run {#action zed::OpenKeymap}
 
 This opens a list of all available bindings. You can override individual shortcuts, remove conflicts, or build a layout that works better for your setup.
 
@@ -350,7 +352,7 @@ Here are a few useful tweaks:
 "load_direnv": "shell_hook"
 ```
 
-**Custom Tasks**: Define build or run commands in your `tasks.json` (accessed via command palette: `zed: open tasks`):
+**Custom Tasks**: Define build or run commands in your `tasks.json` (accessed via command palette: {#action zed::OpenTasks}):
 
 ```json
 [
@@ -362,4 +364,4 @@ Here are a few useful tweaks:
 ```
 
 **Bring over custom snippets**
-Copy your VS Code snippet JSON directly into Zed's snippets folder (`zed: configure snippets`).
+Copy your VS Code snippet JSON directly into Zed's snippets folder ({#action snippets::ConfigureSnippets}).
