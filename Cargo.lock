@@ -15900,6 +15900,7 @@ dependencies = [
  "settings",
  "terminal",
  "terminal_view",
+ "tree-sitter-bash",
  "workspace",
 ]
 
