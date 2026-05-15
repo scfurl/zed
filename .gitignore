@@ -1,6 +1,5 @@
 Cargo.lock
 .zed/.github/
-sync-build-install.md
 **/*.db
 **/*.proptest-regressions
 **/cargo-target
