@@ -6,19 +6,25 @@ use crate::code_getter::expand_paragraph;
 
 /// Expand the cursor position to a language-aware block range.
 /// Tries eval.scm tree-sitter query first, falls back to heuristics.
-pub fn expand_block(
-    buffer: &BufferSnapshot,
-    cursor: Point,
-    language: &Language,
-) -> Range<Point> {
+pub fn expand_block(buffer: &BufferSnapshot, cursor: Point, language: &Language) -> Range<Point> {
+    let language_name = language.name();
+
+    if !matches!(
+        language_name.as_ref(),
+        "Python" | "R" | "Julia" | "Markdown"
+    ) {
+        if let Some(range) = expand_generic_comment_line(buffer, cursor, language) {
+            return range;
+        }
+    }
+
     // 1. Try eval.scm query first
     if let Some(range) = crate::eval::find_eval_at(buffer, cursor) {
         return range;
     }
 
     // 2. Legacy heuristic fallback
-    let name = language.name();
-    match name.as_ref() {
+    match language_name.as_ref() {
         "Python" => expand_python(buffer, cursor),
         "R" => expand_r(buffer, cursor),
         "Julia" => expand_julia(buffer, cursor),
@@ -371,7 +377,9 @@ fn expand_julia(buffer: &BufferSnapshot, cursor: Point) -> Range<Point> {
     }
 
     // Fallback: scan for keyword/end pairs
-    let keywords = ["function", "begin", "for", "while", "if", "let", "do", "module", "struct", "macro"];
+    let keywords = [
+        "function", "begin", "for", "while", "if", "let", "do", "module", "struct", "macro",
+    ];
 
     // Scan backward to find a keyword at or before cursor (skip comment lines)
     let mut keyword_row = None;
@@ -481,9 +489,9 @@ fn expand_jupytext_cell(buffer: &BufferSnapshot, cursor: Point) -> Option<Range<
         .collect();
 
     let is_cell_marker = |row: u32| -> bool {
-        jupytext_prefixes.iter().any(|prefix| {
-            buffer.contains_str_at(Point::new(row, 0), prefix)
-        })
+        jupytext_prefixes
+            .iter()
+            .any(|prefix| buffer.contains_str_at(Point::new(row, 0), prefix))
     };
 
     // Scan backward to find the cell start marker
@@ -548,6 +556,36 @@ fn expand_contiguous_comments(buffer: &BufferSnapshot, row: u32, prefix: &str) -
     Point::new(start_row, 0)..Point::new(end_row, buffer.line_len(end_row))
 }
 
+fn expand_generic_comment_line(
+    buffer: &BufferSnapshot,
+    row: Point,
+    language: &Language,
+) -> Option<Range<Point>> {
+    if buffer.is_line_blank(row.row) {
+        return None;
+    }
+
+    let comment_prefixes = &language.config().line_comments;
+    let comment_prefix = comment_prefix_for_line(buffer, row.row, comment_prefixes)?;
+    Some(expand_contiguous_comments(buffer, row.row, &comment_prefix))
+}
+
+fn comment_prefix_for_line(
+    buffer: &BufferSnapshot,
+    row: u32,
+    comment_prefixes: &[std::sync::Arc<str>],
+) -> Option<String> {
+    let text = line_text(buffer, row);
+    let trimmed = text.trim_start();
+
+    comment_prefixes
+        .iter()
+        .map(|prefix| prefix.trim_end())
+        .filter(|prefix| !prefix.is_empty() && trimmed.starts_with(prefix))
+        .max_by_key(|prefix| prefix.len())
+        .map(ToOwned::to_owned)
+}
+
 fn line_indent(buffer: &BufferSnapshot, row: u32) -> u32 {
     let text = line_text(buffer, row);
     text.chars().take_while(|c| c.is_whitespace()).count() as u32
@@ -576,6 +614,21 @@ mod tests {
             },
             None,
         ))
+    }
+
+    fn make_bash_language() -> Arc<Language> {
+        Arc::new(
+            Language::new(
+                LanguageConfig {
+                    name: "Bash".into(),
+                    line_comments: vec!["# ".into()],
+                    ..Default::default()
+                },
+                Some(tree_sitter_bash::LANGUAGE.into()),
+            )
+            .with_eval_query(include_str!("../../grammars/src/bash/eval.scm"))
+            .expect("bash eval query should parse"),
+        )
     }
 
     fn text_for_range(snapshot: &BufferSnapshot, range: Range<Point>) -> String {
@@ -1018,5 +1071,35 @@ mod tests {
 
         let range = expand_julia(&snapshot, Point::new(0, 0));
         assert_eq!(text_for_range(&snapshot, range), "x = 1\ny = 2");
+    }
+
+    #[gpui::test]
+    fn test_bash_comment_does_not_expand_to_entire_script(cx: &mut App) {
+        let lang = make_bash_language();
+        let buffer = cx.new(|cx| {
+            Buffer::local(
+                indoc! {"
+                    cd ~/develop/zed
+
+                    # One-time setup:
+                    # git remote add upstream https://github.com/zed-industries/zed.git
+
+                    git fetch upstream
+                    git checkout main
+                "},
+                cx,
+            )
+            .with_language(lang, cx)
+        });
+        let snapshot = buffer.read(cx).snapshot();
+
+        let range = expand_block(&snapshot, Point::new(2, 0), snapshot.language().unwrap());
+        assert_eq!(
+            text_for_range(&snapshot, range),
+            "# One-time setup:\n# git remote add upstream https://github.com/zed-industries/zed.git"
+        );
+
+        let range = expand_block(&snapshot, Point::new(5, 0), snapshot.language().unwrap());
+        assert_eq!(text_for_range(&snapshot, range), "git fetch upstream");
     }
 }

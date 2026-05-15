@@ -3,7 +3,12 @@ use terminal::Terminal;
 use terminal_view::{TerminalView, terminal_panel::TerminalPanel};
 use workspace::Workspace;
 
-pub fn send(text: &str, use_bracketed_paste: bool, workspace: &WeakEntity<Workspace>, cx: &mut App) {
+pub fn send(
+    text: &str,
+    use_bracketed_paste: bool,
+    workspace: &WeakEntity<Workspace>,
+    cx: &mut App,
+) {
     let terminal = workspace
         .update(cx, |workspace, cx| find_active_terminal(workspace, cx))
         .ok()

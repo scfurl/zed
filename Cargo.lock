@@ -15908,6 +15908,7 @@ dependencies = [
  "smol",
  "terminal",
  "terminal_view",
+ "tree-sitter-bash",
  "workspace",
 ]
 

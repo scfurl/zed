@@ -1,13 +1,13 @@
 mod block_expander;
 mod code_getter;
 mod eval;
-mod settings;
 mod senders;
+mod settings;
 
+use ::settings::Settings;
 use editor::{Editor, SelectionEffects};
 use gpui::{App, actions, prelude::*};
 use settings::SendCodeSettings;
-use ::settings::Settings;
 use workspace::{Toast, Workspace, notifications::NotificationId};
 
 pub use settings::SendCodeSettingsContent;
@@ -144,11 +144,7 @@ fn send_code_action(
     };
 
     let payload = editor_entity.update(cx, |editor, cx| {
-        code_getter::get_code(
-            editor,
-            code_getter::GetCodeMode::Auto { advance },
-            cx,
-        )
+        code_getter::get_code(editor, code_getter::GetCodeMode::Auto { advance }, cx)
     });
 
     if let Some(payload) = payload {
@@ -164,11 +160,7 @@ fn send_code_action(
     }
 }
 
-fn send_line_action(
-    editor: gpui::WeakEntity<Editor>,
-    window: &mut gpui::Window,
-    cx: &mut App,
-) {
+fn send_line_action(editor: gpui::WeakEntity<Editor>, window: &mut gpui::Window, cx: &mut App) {
     let Some(editor_entity) = editor.upgrade() else {
         return;
     };
@@ -190,11 +182,7 @@ fn send_line_action(
     }
 }
 
-fn send_file_action(
-    editor: gpui::WeakEntity<Editor>,
-    _window: &mut gpui::Window,
-    cx: &mut App,
-) {
+fn send_file_action(editor: gpui::WeakEntity<Editor>, _window: &mut gpui::Window, cx: &mut App) {
     let Some(editor_entity) = editor.upgrade() else {
         return;
     };
@@ -268,26 +256,16 @@ fn goto_prev_eval_action(
 
 struct SendCodeDebugToast;
 
-fn send_payload(
-    payload: &code_getter::CodePayload,
-    editor: &gpui::Entity<Editor>,
-    cx: &mut App,
-) {
+fn send_payload(payload: &code_getter::CodePayload, editor: &gpui::Entity<Editor>, cx: &mut App) {
     let settings = SendCodeSettings::get_global(cx).clone();
-    let language_name = payload
-        .language
-        .as_ref()
-        .map(|l| l.name().to_string());
+    let language_name = payload.language.as_ref().map(|l| l.name().to_string());
     let target = language_name
         .as_ref()
         .and_then(|name| settings.language_targets.get(name))
         .unwrap_or(&settings.target)
         .clone();
 
-    let workspace = editor
-        .read(cx)
-        .workspace()
-        .map(|ws| ws.downgrade());
+    let workspace = editor.read(cx).workspace().map(|ws| ws.downgrade());
 
     if settings.debug {
         let lang_display = language_name.as_deref().unwrap_or("(none)");
@@ -316,8 +294,9 @@ fn send_payload(
         if let Some(ref ws) = workspace {
             let _ = ws.update(cx, |workspace, cx| {
                 workspace.show_toast(
-                    Toast::new(NotificationId::unique::<SendCodeDebugToast>(), msg)
-                        .on_click("Send", move |_window, cx| {
+                    Toast::new(NotificationId::unique::<SendCodeDebugToast>(), msg).on_click(
+                        "Send",
+                        move |_window, cx| {
                             senders::send_to_target(
                                 &text,
                                 &target_clone,
@@ -326,7 +305,8 @@ fn send_payload(
                                 workspace_clone.as_ref(),
                                 cx,
                             );
-                        }),
+                        },
+                    ),
                     cx,
                 );
             });

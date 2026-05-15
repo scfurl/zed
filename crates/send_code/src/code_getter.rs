@@ -36,10 +36,7 @@ pub fn get_code(editor: &Editor, mode: GetCodeMode, cx: &mut App) -> Option<Code
 /// All other languages fall back to single-line behavior for SendCode.
 fn supports_block_expansion(language: &Language) -> bool {
     // Check if the language has an eval.scm tree-sitter query
-    if language
-        .grammar()
-        .is_some_and(|g| g.eval_config.is_some())
-    {
+    if language.grammar().is_some_and(|g| g.eval_config.is_some()) {
         return true;
     }
     // Heuristic fallback languages
@@ -52,9 +49,7 @@ fn get_code_auto(editor: &Editor, advance: bool, cx: &mut App) -> Option<CodePay
     let snapshot = buffer.read(cx).snapshot();
 
     let display_snapshot = editor.display_snapshot(cx);
-    let selection = editor
-        .selections
-        .newest_adjusted(&display_snapshot);
+    let selection = editor.selections.newest_adjusted(&display_snapshot);
     let range = selection.range();
 
     let start = range.start;
@@ -81,7 +76,10 @@ fn get_code_auto(editor: &Editor, advance: bool, cx: &mut App) -> Option<CodePay
             language,
             advance_to,
         })
-    } else if language.as_ref().is_some_and(|l| supports_block_expansion(l)) {
+    } else if language
+        .as_ref()
+        .is_some_and(|l| supports_block_expansion(l))
+    {
         // Blank line: send just a newline and advance (check before block expansion)
         if snapshot.is_line_blank(start.row) {
             return Some(blank_line_payload(language, advance, start.row, &snapshot));
@@ -89,13 +87,12 @@ fn get_code_auto(editor: &Editor, advance: bool, cx: &mut App) -> Option<CodePay
 
         // Block-aware language (Python, R, Julia): expand to block
         let cursor = start;
-        let block_range = block_expander::expand_block(
-            &snapshot,
-            cursor,
-            language.as_ref().unwrap(),
-        );
+        let block_range =
+            block_expander::expand_block(&snapshot, cursor, language.as_ref().unwrap());
 
-        let text: String = snapshot.text_for_range(block_range.start..block_range.end).collect();
+        let text: String = snapshot
+            .text_for_range(block_range.start..block_range.end)
+            .collect();
         if text.trim().is_empty() {
             return Some(blank_line_payload(language, advance, start.row, &snapshot));
         }
@@ -120,7 +117,9 @@ fn get_code_auto(editor: &Editor, advance: bool, cx: &mut App) -> Option<CodePay
         // All other languages: send current line only (like SendLine)
         let row = start.row;
         let line_end = Point::new(row, snapshot.line_len(row));
-        let text: String = snapshot.text_for_range(Point::new(row, 0)..line_end).collect();
+        let text: String = snapshot
+            .text_for_range(Point::new(row, 0)..line_end)
+            .collect();
 
         if text.trim().is_empty() {
             return Some(blank_line_payload(language, advance, row, &snapshot));
@@ -151,9 +150,7 @@ fn get_code_line(editor: &Editor, cx: &mut App) -> Option<CodePayload> {
     let snapshot = buffer.read(cx).snapshot();
 
     let display_snapshot = editor.display_snapshot(cx);
-    let selection = editor
-        .selections
-        .newest_adjusted(&display_snapshot);
+    let selection = editor.selections.newest_adjusted(&display_snapshot);
     let range = selection.range();
     let start = range.start;
     let end = range.end;
@@ -179,7 +176,9 @@ fn get_code_line(editor: &Editor, cx: &mut App) -> Option<CodePayload> {
         // No selection: send current line
         let row = start.row;
         let line_end = Point::new(row, snapshot.line_len(row));
-        let text: String = snapshot.text_for_range(Point::new(row, 0)..line_end).collect();
+        let text: String = snapshot
+            .text_for_range(Point::new(row, 0)..line_end)
+            .collect();
 
         // Blank line: send just a newline (Enter) and advance
         if text.trim().is_empty() {
@@ -244,9 +243,18 @@ fn get_code_file(
 
     let text = if let Some(path) = file_path {
         match language_name.as_deref() {
-            Some("R") => format!("source(\"{}\")\n", path.replace('\\', "\\\\").replace('"', "\\\"")),
-            Some("Python") => format!("exec(open(\"{}\").read())\n", path.replace('\\', "\\\\").replace('"', "\\\"")),
-            Some("Julia") => format!("include(\"{}\")\n", path.replace('\\', "\\\\").replace('"', "\\\"")),
+            Some("R") => format!(
+                "source(\"{}\")\n",
+                path.replace('\\', "\\\\").replace('"', "\\\"")
+            ),
+            Some("Python") => format!(
+                "exec(open(\"{}\").read())\n",
+                path.replace('\\', "\\\\").replace('"', "\\\"")
+            ),
+            Some("Julia") => format!(
+                "include(\"{}\")\n",
+                path.replace('\\', "\\\\").replace('"', "\\\"")
+            ),
             _ => {
                 // Fallback: send entire file contents
                 let text: String = snapshot.text().to_string();

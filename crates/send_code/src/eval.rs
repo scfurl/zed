@@ -4,10 +4,7 @@ use language::{BufferSnapshot, Point};
 
 /// Find the eval region enclosing `cursor_point` using the language's
 /// eval.scm query. Returns the tightest matching capture containing the cursor.
-pub fn find_eval_at(
-    buffer: &BufferSnapshot,
-    cursor_point: Point,
-) -> Option<Range<Point>> {
+pub fn find_eval_at(buffer: &BufferSnapshot, cursor_point: Point) -> Option<Range<Point>> {
     let cursor_offset = buffer.point_to_offset(cursor_point);
 
     let mut syntax_matches = buffer.matches(0..buffer.len(), |grammar| {
@@ -28,10 +25,8 @@ pub fn find_eval_at(
                 if capture.index == config.eval_capture_ix {
                     let range = capture.node.byte_range();
                     if range.start <= cursor_offset && cursor_offset <= range.end {
-                        let is_tighter = best
-                            .as_ref()
-                            .map(|b| range.len() < b.len())
-                            .unwrap_or(true);
+                        let is_tighter =
+                            best.as_ref().map(|b| range.len() < b.len()).unwrap_or(true);
                         if is_tighter {
                             best = Some(range);
                         }
