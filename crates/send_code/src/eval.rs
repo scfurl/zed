@@ -3,11 +3,8 @@ use std::ops::Range;
 use language::{BufferSnapshot, Point};
 
 /// Find the eval region enclosing `cursor_point` using the language's
-/// eval.scm query. Returns the tightest matching capture containing the cursor.
-pub fn find_eval_at(
-    buffer: &BufferSnapshot,
-    cursor_point: Point,
-) -> Option<Range<Point>> {
+/// eval.scm query. Returns the tightest `@eval` capture containing the cursor.
+pub fn find_eval_at(buffer: &BufferSnapshot, cursor_point: Point) -> Option<Range<Point>> {
     let cursor_offset = buffer.point_to_offset(cursor_point);
 
     let mut syntax_matches = buffer.matches(0..buffer.len(), |grammar| {
@@ -28,10 +25,8 @@ pub fn find_eval_at(
                 if capture.index == config.eval_capture_ix {
                     let range = capture.node.byte_range();
                     if range.start <= cursor_offset && cursor_offset <= range.end {
-                        let is_tighter = best
-                            .as_ref()
-                            .map(|b| range.len() < b.len())
-                            .unwrap_or(true);
+                        let is_tighter =
+                            best.as_ref().map(|b| range.len() < b.len()).unwrap_or(true);
                         if is_tighter {
                             best = Some(range);
                         }
@@ -49,52 +44,107 @@ pub fn find_eval_at(
     })
 }
 
-/// Return all top-level eval regions in order.
-/// "Top-level" = no other eval region fully contains this one.
-/// Used for GotoNextEval / GotoPrevEval navigation.
-pub fn all_evals(buffer: &BufferSnapshot) -> Vec<Range<Point>> {
-    let mut syntax_matches = buffer.matches(0..buffer.len(), |grammar| {
-        grammar.eval_config.as_ref().map(|c| &c.query)
-    });
-
-    let configs: Vec<_> = syntax_matches
-        .grammars()
-        .iter()
-        .map(|grammar| grammar.eval_config.as_ref())
-        .collect();
-
-    let mut ranges: Vec<Range<usize>> = Vec::new();
-
-    while let Some(mat) = syntax_matches.peek() {
-        if let Some(config) = &configs[mat.grammar_index] {
-            for capture in mat.captures.iter() {
-                if capture.index == config.eval_capture_ix {
-                    ranges.push(capture.node.byte_range());
-                }
-            }
-        }
-        syntax_matches.advance();
+/// Fallback for Markdown buffers: when the cursor sits inside a fenced code
+/// block, return the injected content range. Lets a single SendEvalAtCursor
+/// press grab a full ```python``` block from a Markdown file without needing
+/// a per-language eval.scm to be loaded for Markdown.
+pub fn find_markdown_injection_at(
+    buffer: &BufferSnapshot,
+    cursor_point: Point,
+) -> Option<Range<Point>> {
+    let outer = buffer.language()?;
+    if outer.name().as_ref() != "Markdown" {
+        return None;
     }
 
-    // Keep only top-level ranges (remove any contained within another)
-    ranges.sort_by_key(|r| r.start);
-    let mut top_level: Vec<Range<usize>> = Vec::new();
-    for range in ranges {
-        if let Some(last) = top_level.last() {
-            if range.start >= last.end {
-                top_level.push(range);
-            }
-        } else {
-            top_level.push(range);
-        }
+    let cursor_offset = buffer.point_to_offset(cursor_point);
+    let (content_range, _) = buffer
+        .injections_intersecting_range(cursor_offset..cursor_offset)
+        .next()?;
+    let start = buffer.offset_to_point(content_range.start);
+    let end = buffer.offset_to_point(content_range.end);
+    Some(start..end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{AppContext as _, TestAppContext};
+    use language::{Buffer, Language, LanguageRegistry};
+    use std::sync::Arc;
+
+    fn rust_language_with_eval_query() -> Arc<Language> {
+        let language = match Arc::try_unwrap(language::rust_lang()) {
+            Ok(language) => language,
+            Err(_) => panic!("rust_lang should be uniquely owned in this test"),
+        };
+
+        let language = language
+            .with_eval_query("(function_item) @eval\n(block) @eval")
+            .expect("rust eval query should parse");
+        Arc::new(language)
     }
 
-    top_level
-        .into_iter()
-        .map(|r| {
-            let start = buffer.offset_to_point(r.start);
-            let end = buffer.offset_to_point(r.end);
-            start..end
-        })
-        .collect()
+    fn snapshot_for(
+        text: &str,
+        language: Arc<Language>,
+        language_registry: Option<Arc<LanguageRegistry>>,
+        cx: &mut TestAppContext,
+    ) -> BufferSnapshot {
+        let buffer = cx.new(|cx| {
+            let mut buffer = Buffer::local(text, cx);
+            if let Some(language_registry) = language_registry {
+                buffer.set_language_registry(language_registry);
+            }
+            buffer.set_language(Some(language), cx);
+            buffer
+        });
+        cx.executor().run_until_parked();
+        buffer.read_with(cx, |buffer, _| buffer.snapshot())
+    }
+
+    fn text_for_range(buffer: &BufferSnapshot, range: Range<Point>) -> String {
+        buffer.text_for_range(range.start..range.end).collect()
+    }
+
+    #[gpui::test]
+    fn find_eval_at_returns_tightest_capture(cx: &mut TestAppContext) {
+        let snapshot = snapshot_for(
+            "fn outer() {\n    if true {\n        println!(\"hi\");\n    }\n}\n",
+            rust_language_with_eval_query(),
+            None,
+            cx,
+        );
+
+        let range = find_eval_at(&snapshot, Point::new(2, 10))
+            .expect("expected cursor inside nested block to match an eval capture");
+
+        assert_eq!(
+            text_for_range(&snapshot, range),
+            "{\n        println!(\"hi\");\n    }"
+        );
+    }
+
+    #[gpui::test]
+    fn find_markdown_injection_at_returns_fenced_code_block(cx: &mut TestAppContext) {
+        let registry = Arc::new(LanguageRegistry::test(cx.background_executor.clone()));
+        let markdown_language = language::markdown_lang();
+        registry.add(markdown_language.clone());
+        registry.add(language::rust_lang());
+
+        let snapshot = snapshot_for(
+            "before\n\n```rs\nfn main() {\n    println!(\"hi\");\n}\n```\n\nafter\n",
+            markdown_language,
+            Some(registry),
+            cx,
+        );
+
+        let range = find_markdown_injection_at(&snapshot, Point::new(4, 4))
+            .expect("expected cursor inside fenced code block to match injection content");
+
+        assert_eq!(
+            text_for_range(&snapshot, range),
+            "fn main() {\n    println!(\"hi\");\n}\n"
+        );
+    }
 }

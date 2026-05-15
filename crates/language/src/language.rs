@@ -1599,6 +1599,7 @@ pub fn rust_lang() -> Arc<Language> {
         debugger: Some(Cow::from(include_str!(
             "../../grammars/src/rust/debugger.scm"
         ))),
+        eval: None,
     })
     .expect("Could not parse queries");
     Arc::new(language)

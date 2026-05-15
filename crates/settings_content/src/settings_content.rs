@@ -1237,49 +1237,21 @@ pub struct ReplSettingsContent {
     pub output_max_height_lines: Option<usize>,
 }
 
-/// Settings for sending code from the editor to a terminal or external REPL.
+/// Settings for sending code from the editor to a terminal.
 #[with_fallible_options]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
 pub struct SendCodeSettingsContent {
-    /// Whether SendCode actions are enabled.
+    /// Whether the SendCode actions are enabled.
     ///
     /// Default: true
     pub enabled: Option<bool>,
 
-    /// Show a debug toast with extracted text, language, and target before sending.
-    ///
-    /// Default: false
-    pub debug: Option<bool>,
-
-    /// The default target for sending code.
-    /// Options: "zed_terminal", "ghostty", "iterm", "terminal_app", "cmux", "tmux"
-    ///
-    /// Default: zed_terminal
-    pub target: Option<String>,
-
-    /// Whether to use bracketed paste mode for multiline sends.
+    /// Whether to wrap multi-line sends in bracketed paste escape sequences.
+    /// Disable for REPLs whose readline does not interpret bracketed paste
+    /// (e.g. R's default readline).
     ///
     /// Default: true
     pub bracketed_paste: Option<bool>,
-
-    /// Chunk size (in characters) for Ghostty AppleScript sends.
-    ///
-    /// Default: 1000
-    pub ghostty_chunk_size: Option<usize>,
-
-    /// Chunk size (in characters) for cmux CLI sends.
-    ///
-    /// Default: 200
-    pub cmux_chunk_size: Option<usize>,
-
-    /// Optional cmux surface name for targeting a specific pane.
-    pub cmux_surface: Option<String>,
-
-    /// Optional tmux target pane (e.g., "session:window.pane").
-    pub tmux_target: Option<String>,
-
-    /// Per-language target overrides. Keys are language names (e.g., "R", "Python").
-    pub language_targets: Option<HashMap<String, String>>,
 }
 
 /// Settings for configuring the which-key popup behaviour.

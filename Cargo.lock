@@ -15893,19 +15893,11 @@ dependencies = [
 name = "send_code"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "collections",
  "editor",
  "gpui",
- "indoc",
  "language",
  "log",
- "multi_buffer",
- "schemars",
- "serde",
- "serde_json",
  "settings",
- "smol",
  "terminal",
  "terminal_view",
  "workspace",
