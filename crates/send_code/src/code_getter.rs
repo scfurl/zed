@@ -85,6 +85,12 @@ fn get_code_auto(editor: &Editor, advance: bool, cx: &mut App) -> Option<CodePay
             return Some(blank_line_payload(language, advance, start.row, &snapshot));
         }
 
+        if language.as_ref().is_some_and(|language| {
+            block_expander::is_standalone_comment_line(&snapshot, start.row, language)
+        }) {
+            return None;
+        }
+
         // Block-aware language (Python, R, Julia): expand to block
         let cursor = start;
         let block_range =
@@ -175,15 +181,21 @@ fn get_code_line(editor: &Editor, cx: &mut App) -> Option<CodePayload> {
     } else {
         // No selection: send current line
         let row = start.row;
+
+        if snapshot.is_line_blank(row) {
+            return Some(blank_line_payload(language, true, row, &snapshot));
+        }
+
+        if language.as_ref().is_some_and(|language| {
+            block_expander::is_standalone_comment_line(&snapshot, row, language)
+        }) {
+            return None;
+        }
+
         let line_end = Point::new(row, snapshot.line_len(row));
         let text: String = snapshot
             .text_for_range(Point::new(row, 0)..line_end)
             .collect();
-
-        // Blank line: send just a newline (Enter) and advance
-        if text.trim().is_empty() {
-            return Some(blank_line_payload(language, true, row, &snapshot));
-        }
 
         let next_row = row + 1;
         let advance_to = if next_row <= snapshot.max_point().row {

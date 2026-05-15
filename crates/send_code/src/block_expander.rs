@@ -9,15 +9,6 @@ use crate::code_getter::expand_paragraph;
 pub fn expand_block(buffer: &BufferSnapshot, cursor: Point, language: &Language) -> Range<Point> {
     let language_name = language.name();
 
-    if !matches!(
-        language_name.as_ref(),
-        "Python" | "R" | "Julia" | "Markdown"
-    ) {
-        if let Some(range) = expand_generic_comment_line(buffer, cursor, language) {
-            return range;
-        }
-    }
-
     // 1. Try eval.scm query first
     if let Some(range) = crate::eval::find_eval_at(buffer, cursor) {
         return range;
@@ -556,18 +547,13 @@ fn expand_contiguous_comments(buffer: &BufferSnapshot, row: u32, prefix: &str) -
     Point::new(start_row, 0)..Point::new(end_row, buffer.line_len(end_row))
 }
 
-fn expand_generic_comment_line(
-    buffer: &BufferSnapshot,
-    row: Point,
-    language: &Language,
-) -> Option<Range<Point>> {
-    if buffer.is_line_blank(row.row) {
-        return None;
+pub fn is_standalone_comment_line(buffer: &BufferSnapshot, row: u32, language: &Language) -> bool {
+    if buffer.is_line_blank(row) {
+        return false;
     }
 
     let comment_prefixes = &language.config().line_comments;
-    let comment_prefix = comment_prefix_for_line(buffer, row.row, comment_prefixes)?;
-    Some(expand_contiguous_comments(buffer, row.row, &comment_prefix))
+    comment_prefix_for_line(buffer, row, comment_prefixes).is_some()
 }
 
 fn comment_prefix_for_line(
@@ -629,6 +615,44 @@ mod tests {
             .with_eval_query(include_str!("../../grammars/src/bash/eval.scm"))
             .expect("bash eval query should parse"),
         )
+    }
+
+    #[gpui::test]
+    fn test_is_standalone_comment_line_matches_comment(cx: &mut App) {
+        let lang = make_language("Python");
+        let buffer = cx.new(|cx| {
+            Buffer::local(
+                indoc! {"
+                    # comment
+                    x = 1
+                "},
+                cx,
+            )
+            .with_language(lang.clone(), cx)
+        });
+        let snapshot = buffer.read(cx).snapshot();
+
+        assert!(is_standalone_comment_line(&snapshot, 0, &lang));
+        assert!(!is_standalone_comment_line(&snapshot, 1, &lang));
+    }
+
+    #[gpui::test]
+    fn test_is_standalone_comment_line_ignores_blank_lines(cx: &mut App) {
+        let lang = make_language("Python");
+        let buffer = cx.new(|cx| {
+            Buffer::local(
+                indoc! {"
+
+                    # comment
+                "},
+                cx,
+            )
+            .with_language(lang.clone(), cx)
+        });
+        let snapshot = buffer.read(cx).snapshot();
+
+        assert!(!is_standalone_comment_line(&snapshot, 0, &lang));
+        assert!(is_standalone_comment_line(&snapshot, 1, &lang));
     }
 
     fn text_for_range(snapshot: &BufferSnapshot, range: Range<Point>) -> String {

@@ -1,6 +1,7 @@
 ## Sync fork with upstream
 
 ```bash
+
 cd ~/develop/zed
 
 # One-time setup:
