@@ -40,9 +40,7 @@ pub fn get_eval_at_cursor(editor: &Editor, cx: &mut App) -> Option<CodePayload> 
     let selection = editor.selections.newest_adjusted(&display_snapshot);
     let cursor = selection.head();
 
-    let range = crate::eval::find_comment_block_at(&snapshot, cursor)
-        .or_else(|| crate::eval::find_eval_at(&snapshot, cursor))
-        .or_else(|| crate::eval::find_markdown_injection_at(&snapshot, cursor))?;
+    let range = crate::eval::find_eval_at(&snapshot, cursor)?;
 
     let text: String = snapshot.text_for_range(range.start..range.end).collect();
     if text.trim().is_empty() {

@@ -9,8 +9,6 @@ Send code from the editor to Zed's built-in terminal.
 | `send_code::SendSelectionToTerminal` | Send the current selection to the active terminal. No-op when the selection is empty. |
 | `send_code::SendEvalAtCursorToTerminal` | Find the smallest evaluable block containing the cursor (via the language's `eval.scm` tree-sitter query) and send it. Advances the cursor to the next line. No-op when the cursor is not inside an `@eval` node. |
 
-`SendEvalAtCursorToTerminal` also falls back to fenced-code-block injection ranges in Markdown buffers, so the action works on a `\`\`\`python` block even without a Markdown-specific eval query.
-
 To get "send the current line" behavior, compose actions:
 
 ```json
@@ -61,6 +59,6 @@ crates/send_code/src/
   send_code.rs        Action registration and dispatch
   settings.rs         enabled / bracketed_paste
   code_getter.rs      Selection / eval-at-cursor extraction
-  eval.rs             Tree-sitter eval.scm matching + Markdown injection fallback
+  eval.rs             Tree-sitter eval.scm matching
   senders.rs          Write to the active terminal pane
 ```
