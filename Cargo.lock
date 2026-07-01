@@ -16372,6 +16372,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "send_code"
+version = "0.1.0"
+dependencies = [
+ "editor",
+ "gpui",
+ "language",
+ "log",
+ "settings",
+ "terminal",
+ "terminal_view",
+ "tree-sitter-bash",
+ "workspace",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -23083,6 +23098,7 @@ dependencies = [
  "sandbox",
  "search",
  "semver",
+ "send_code",
  "serde",
  "serde_json",
  "session",
