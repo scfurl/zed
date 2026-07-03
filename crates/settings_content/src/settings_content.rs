@@ -183,6 +183,9 @@ pub struct SettingsContent {
 
     pub repl: Option<ReplSettingsContent>,
 
+    /// Settings for sending code from the editor to a terminal.
+    pub send_code: Option<SendCodeSettingsContent>,
+
     /// Whether or not to enable Helix mode.
     ///
     /// Default: false
@@ -210,6 +213,9 @@ pub struct SettingsContent {
     pub outline_panel: Option<OutlinePanelSettingsContent>,
 
     pub project_panel: Option<ProjectPanelSettingsContent>,
+
+    /// Configuration for the Message Editor
+    pub message_editor: Option<MessageEditorSettings>,
 
     /// Configuration for Node-related features
     pub node: Option<NodeBinarySettings>,
@@ -273,6 +279,21 @@ pub struct InstrumentationSettingsContent {
     /// Configuration for the performance profiler, accessed via the
     /// `zed: open performance profiler` action.
     pub performance_profiler: Option<PerformanceProfilerSettingsContent>,
+}
+
+/// Settings for sending code from the editor to a terminal.
+#[with_fallible_options]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct SendCodeSettingsContent {
+    /// Whether the SendCode actions are enabled.
+    ///
+    /// Default: true
+    pub enabled: Option<bool>,
+
+    /// Whether to wrap multi-line sends in bracketed paste escape sequences.
+    ///
+    /// Default: true
+    pub bracketed_paste: Option<bool>,
 }
 
 /// Configuration for the performance profiler which collects timing data
@@ -834,6 +855,16 @@ pub struct PanelSettingsContent {
     /// Default: 240
     #[serde(serialize_with = "crate::serialize_optional_f32_with_two_decimal_places")]
     pub default_width: Option<f32>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Default, Serialize, Deserialize, JsonSchema, MergeFrom, Debug, PartialEq)]
+pub struct MessageEditorSettings {
+    /// Whether to automatically replace emoji shortcodes with emoji characters.
+    /// For example: typing `:wave:` gets replaced with `👋`.
+    ///
+    /// Default: false
+    pub auto_replace_emoji_shortcode: Option<bool>,
 }
 
 #[with_fallible_options]

@@ -1,3 +1,5 @@
+send-code-manual-test.md
+sync-build-install.md
 **/*.db
 **/*.proptest-regressions
 **/cargo-target

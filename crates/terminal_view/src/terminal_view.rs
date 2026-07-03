@@ -959,7 +959,7 @@ impl TerminalView {
     pub fn add_paths_to_terminal(&self, paths: &[PathBuf], window: &mut Window, cx: &mut App) {
         let mut text = paths
             .iter()
-            .filter_map(|path| Some(format!(" {}", shlex::try_quote(path.to_str()?).ok()?)))
+            .map(|path| format!(" {path:?}"))
             .collect::<String>();
         text.push(' ');
         window.focus(&self.focus_handle(cx), cx);
@@ -2176,7 +2176,7 @@ mod tests {
         let mut text = String::new();
         for path in paths {
             text.push(' ');
-            text.push_str(&shlex::try_quote(path.to_str().unwrap()).unwrap());
+            text.push_str(&format!("{path:?}"));
         }
         text.push(' ');
         text

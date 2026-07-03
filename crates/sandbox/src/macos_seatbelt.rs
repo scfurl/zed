@@ -88,8 +88,9 @@ impl SeatbeltConfigFile {
     /// directory of the command, since that is model-controlled and would
     /// let the model widen its own writable scope.
     ///
-    /// `protected_paths` lists paths whose writes should be blocked even if they
-    /// fall under a writable directory. Contents remain readable.
+    /// `protected_paths` lists paths whose file data reads and writes should
+    /// be blocked even if they fall under a readable or writable directory.
+    /// File metadata remains readable.
     ///
     /// `allowed_unix_socket_paths` lists Unix domain sockets the command may
     /// connect to for local IPC even when IP network access is otherwise
@@ -137,8 +138,9 @@ impl SeatbeltConfigFile {
 ///   the project's worktree paths here, not the working directory of the
 ///   command (the working directory is model-controlled, and using it as
 ///   the writable scope would let the model write outside the project).
-/// * `protected_paths` - Paths whose writes should be denied even if they fall
-///   under a writable directory. Contents remain readable.
+/// * `protected_paths` - Paths whose file data reads and writes should be
+///   denied even if they fall under a readable or writable directory. File
+///   metadata remains readable.
 /// * `allowed_unix_socket_paths` - Unix domain sockets the command may
 ///   connect to for local IPC even when IP network access is otherwise
 ///   disabled. This does not permit sending packets to other machines.
@@ -189,8 +191,9 @@ pub fn wrap_invocation(
 /// Writes to each entry in `writable_directories` (typically the project's
 /// worktree paths plus any per-command scratch directory the caller wants
 /// allowed) and the standard `/dev/*` write targets are also allowed by
-/// default. Writes to paths in `protected_paths` are denied even when they
-/// would otherwise be writable; contents remain readable. Unix domain socket paths in
+/// default. File data reads and writes to paths in `protected_paths` are
+/// denied even when they would otherwise be readable or writable; file
+/// metadata remains readable. Unix domain socket paths in
 /// `allowed_unix_socket_paths` are reachable for local IPC even when IP
 /// network access is otherwise blocked. This does not permit sending packets
 /// to other machines.
@@ -208,7 +211,7 @@ fn generate_seatbelt_config(
 ) -> Result<String> {
     // These paths are already the canonical identities captured once, at
     // validation time, inside each `HostFilesystemLocation` (resolving symlinks
-    // and, for a not-yet-created leaf, its existing parent). We deliberately do
+    // and, for a not-yet-created `.git`, its existing parent). We deliberately do
     // NOT re-canonicalize here: re-resolving a path at profile-generation time
     // is the time-of-check-to-time-of-use hole this design closes. Use them
     // verbatim as Seatbelt rule literals.
@@ -308,11 +311,12 @@ fn generate_seatbelt_config(
     for protected_path in &canonical_protected_paths {
         let escaped_path = escape_sandbox_path(protected_path)?;
         // `subpath` already matches the path itself plus everything beneath it,
-        // so no redundant `literal` rule is needed.
+        // so it covers both a `.git` directory and a linked worktree's `.git`
+        // gitlink file without a redundant `literal` rule.
         config.push_str(&format!(
             r#"
-; Block protected path writes
-(deny file-write*
+; Block Git metadata content access unless Git access is approved
+(deny file-read-data file-write*
     (subpath "{escaped_path}"))
 "#
         ));
@@ -536,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_seatbelt_config_denies_protected_path_writes() {
+    fn test_generate_seatbelt_config_denies_protected_path_data_and_writes() {
         let dir = PathBuf::from("/Users/test/projects/myproject");
         let protected = dir.join(".gitignore");
         let config = generate_seatbelt_config(
@@ -547,15 +551,14 @@ mod tests {
         )
         .unwrap();
 
-        assert!(config.contains("(deny file-write*"));
-        assert!(!config.contains("file-read-data"));
+        assert!(config.contains("(deny file-read-data file-write*"));
         assert!(config.contains("(subpath \"/Users/test/projects/myproject/.gitignore\")"));
         // `subpath` already covers the path itself, so no redundant `literal`.
         assert!(!config.contains("(literal \"/Users/test/projects/myproject/.gitignore\")"));
     }
 
     #[test]
-    fn test_sandbox_allows_protected_path_reads_but_blocks_writes() {
+    fn test_sandbox_blocks_protected_path_contents_but_allows_metadata() {
         use std::process::Command;
 
         let temp_dir = tempfile::tempdir().unwrap();
@@ -571,7 +574,7 @@ mod tests {
             &[
                 "-c".to_string(),
                 format!(
-                    "test -e '{}' && cat '{}' >/dev/null 2>&1 && ! sh -c 'echo changed > {}'",
+                    "test -e '{}' && ! cat '{}' >/dev/null 2>&1 && ! sh -c 'echo changed > {}'",
                     protected_file.display(),
                     protected_file.display(),
                     protected_file.display(),
@@ -591,7 +594,7 @@ mod tests {
 
         assert!(
             output.status.success(),
-            "sandbox should allow protected reads but deny protected writes: stderr={} stdout={}",
+            "sandbox should allow metadata but deny protected data reads and writes: stderr={} stdout={}",
             String::from_utf8_lossy(&output.stderr),
             String::from_utf8_lossy(&output.stdout),
         );
@@ -617,7 +620,7 @@ mod tests {
             &[
                 "-c".to_string(),
                 format!(
-                    "cat '{}' >/dev/null 2>&1 && ! sh -c 'echo changed > {}'",
+                    "! cat '{}' >/dev/null 2>&1 && ! sh -c 'echo changed > {}'",
                     protected_file.display(),
                     protected_file.display(),
                 ),
@@ -639,7 +642,7 @@ mod tests {
 
         assert!(
             output.status.success(),
-            "protected paths should stay readable but not writable even with unrestricted writes: stderr={} stdout={}",
+            "protected paths should stay blocked even with unrestricted writes: stderr={} stdout={}",
             String::from_utf8_lossy(&output.stderr),
             String::from_utf8_lossy(&output.stdout),
         );

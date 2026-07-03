@@ -71,6 +71,11 @@ pub struct OrganizationEditPredictionConfiguration {
     pub is_feedback_enabled: bool,
 }
 
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+pub struct AcceptTermsOfServiceResponse {
+    pub user: AuthenticatedUser,
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct LlmToken(pub String);
 

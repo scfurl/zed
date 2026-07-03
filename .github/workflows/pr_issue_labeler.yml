@@ -41,7 +41,47 @@ jobs:
             const STAFF_TEAM_SLUG = 'staff';
             const FIRST_CONTRIBUTION_LABEL = 'first contribution';
             const GUILD_LABEL = 'guild';
-            const GUILD_TEAM_SLUG = 'guild-cohort-2';
+            const GUILD_MEMBERS = [
+              '11happy',
+              'AidanV',
+              'alanpjohn',
+              'AmaanBilwar',
+              'arjunkomath',
+              'austincummings',
+              'ayushk-1801',
+              'criticic',
+              'dongdong867',
+              'emamulandalib',
+              'eureka928',
+              'feitreim',
+              'iam-liam',
+              'iksuddle',
+              'ishaksebsib',
+              'lingyaochu',
+              'loadingalias',
+              'marcocondrache',
+              'mchisolm0',
+              'MostlyKIGuess',
+              'nairadithya',
+              'nihalxkumar',
+              'notJoon',
+              'OmChillure',
+              'Palanikannan1437',
+              'polyesterswing',
+              'prayanshchh',
+              'razeghi71',
+              'sarmadgulzar',
+              'seanstrom',
+              'Shivansh-25',
+              'SkandaBhat',
+              'th0jensen',
+              'tommyming',
+              'transitoryangel',
+              'TwistingTwists',
+              'virajbhartiya',
+              'YEDASAVG',
+              'Ziqi-Yang',
+            ];
             const COMMUNITY_CHAMPION_LABEL = 'community champion';
             const COMMUNITY_CHAMPIONS = [
               '0x2CA',
@@ -121,11 +161,11 @@ jobs:
               return members.some((member) => member.toLowerCase() === authorLower);
             };
 
-            const isTeamMember = async (teamSlug, author) => {
+            const isStaffMember = async (author) => {
               try {
                 const response = await github.rest.teams.getMembershipForUserInOrg({
                   org: 'zed-industries',
-                  team_slug: teamSlug,
+                  team_slug: STAFF_TEAM_SLUG,
                   username: author
                 });
                 return response.data.state === 'active';
@@ -136,9 +176,6 @@ jobs:
                 return false;
               }
             };
-
-            const isStaffMember = (author) => isTeamMember(STAFF_TEAM_SLUG, author);
-            const isGuildMember = (author) => isTeamMember(GUILD_TEAM_SLUG, author);
 
             const getIssueLabels = () => {
               if (listIncludesAuthor(COMMUNITY_CHAMPIONS, author)) {
@@ -165,7 +202,7 @@ jobs:
                 labelsToAdd.push(COMMUNITY_CHAMPION_LABEL);
               }
 
-              if (await isGuildMember(author)) {
+              if (listIncludesAuthor(GUILD_MEMBERS, author)) {
                 labelsToAdd.push(GUILD_LABEL);
               }
 

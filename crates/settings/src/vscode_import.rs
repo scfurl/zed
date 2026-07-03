@@ -199,6 +199,7 @@ impl VsCodeSettings {
             language_models: None,
             line_indicator_format: None,
             log: None,
+            message_editor: None,
             node: self.node_binary_settings(),
 
             outline_panel: self.outline_panel_settings_content(),
@@ -208,6 +209,7 @@ impl VsCodeSettings {
             proxy: self.read_string("http.proxy"),
             remote: RemoteSettingsContent::default(),
             repl: None,
+            send_code: None,
             server_url: None,
             session: None,
             status_bar: self.status_bar_settings_content(),

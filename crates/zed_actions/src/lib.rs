@@ -539,7 +539,7 @@ pub mod agent {
     actions!(
         agent,
         [
-            /// Opens the agent settings UI.
+            /// Opens the agent settings panel.
             #[action(deprecated_aliases = ["agent::OpenConfiguration"])]
             OpenSettings,
             /// Opens the agent onboarding modal.

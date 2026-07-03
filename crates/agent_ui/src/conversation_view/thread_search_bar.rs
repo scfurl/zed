@@ -946,7 +946,6 @@ fn collect_markdowns(
                 out.push(summary.clone());
             }
         }
-        AgentThreadEntry::Elicitation(_) => {}
         AgentThreadEntry::ContextCompaction(_) => {}
     }
     out

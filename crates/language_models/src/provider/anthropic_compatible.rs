@@ -3,14 +3,13 @@ use anthropic::{AnthropicError, AnthropicModelMode};
 use anyhow::Result;
 use credentials_provider::CredentialsProvider;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
-use gpui::{App, AppContext, AsyncApp, Entity, Task};
+use gpui::{AnyView, App, AppContext, AsyncApp, Entity, Task, Window};
 use http_client::{CustomHeaders, HttpClient};
 use language_model::{
     AuthenticateError, IconOrSvg, LanguageModel, LanguageModelCompletionError,
     LanguageModelCompletionEvent, LanguageModelId, LanguageModelName, LanguageModelProvider,
     LanguageModelProviderId, LanguageModelProviderName, LanguageModelProviderState,
-    LanguageModelRequest, LanguageModelToolChoice, ProviderSettingsView, RateLimiter,
-    SubPageProviderSettings,
+    LanguageModelRequest, LanguageModelToolChoice, RateLimiter,
 };
 use settings::Settings;
 use std::sync::Arc;
@@ -182,27 +181,27 @@ impl LanguageModelProvider for AnthropicCompatibleLanguageModelProvider {
         self.state.update(cx, |state, cx| state.authenticate(cx))
     }
 
-    fn settings_view(&self, _cx: &mut App) -> Option<ProviderSettingsView> {
-        let state = self.state.clone();
-        Some(ProviderSettingsView::SubPage(SubPageProviderSettings::new(
-            move |window, cx| {
-                cx.new(|cx| {
-                    ApiCompatibleProviderConfigurationView::new(
-                        state.clone(),
-                        "Anthropic",
-                        API_KEY_PLACEHOLDER,
-                        window,
-                        cx,
-                    )
-                })
-                .into()
-            },
-        )))
+    fn configuration_view(
+        &self,
+        _target_agent: language_model::ConfigurationViewTargetAgent,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyView {
+        cx.new(|cx| {
+            ApiCompatibleProviderConfigurationView::new(
+                self.state.clone(),
+                "Anthropic",
+                API_KEY_PLACEHOLDER,
+                window,
+                cx,
+            )
+        })
+        .into()
     }
 
-    fn set_api_key(&self, api_key: Option<String>, cx: &mut App) -> Task<Result<()>> {
+    fn reset_credentials(&self, cx: &mut App) -> Task<Result<()>> {
         self.state
-            .update(cx, |state, cx| state.set_api_key(api_key, cx))
+            .update(cx, |state, cx| state.set_api_key(None, cx))
     }
 }
 
