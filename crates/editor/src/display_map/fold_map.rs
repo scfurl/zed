@@ -6,12 +6,12 @@ use super::{
 };
 use gpui::{AnyElement, App, ElementId, HighlightStyle, Pixels, SharedString, Stateful, Window};
 use language::{Edit, HighlightId, LanguageAwareStyling, Point};
-use smallvec::SmallVec;
 use multi_buffer::{
     Anchor, AnchorRangeExt, MBTextSummary, MultiBufferOffset, MultiBufferRow, MultiBufferSnapshot,
     RowInfo, ToOffset,
 };
 use project::InlayId;
+use smallvec::SmallVec;
 use std::{
     any::TypeId,
     cmp::{self, Ordering},

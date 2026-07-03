@@ -8152,10 +8152,10 @@ impl Element for EditorElement {
                         .editor
                         .update(cx, |editor, cx| editor.highlighted_display_rows(window, cx));
 
-                    for (row, bg_color) in snapshot.display_snapshot.syntax_background_rows(
-                        start_row..end_row,
-                        &self.style.syntax,
-                    ) {
+                    for (row, bg_color) in snapshot
+                        .display_snapshot
+                        .syntax_background_rows(start_row..end_row, &self.style.syntax)
+                    {
                         highlighted_rows.entry(row).or_insert(LineHighlight {
                             background: solid_background(bg_color),
                             border: None,

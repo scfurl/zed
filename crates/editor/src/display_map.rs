@@ -119,8 +119,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use ztracing::instrument;
 
 use std::cell::RefCell;
-use std::collections::hash_map::Entry;
 use std::collections::BTreeMap;
+use std::collections::hash_map::Entry;
 use std::{
     any::TypeId,
     borrow::Cow,
@@ -1989,7 +1989,14 @@ impl DisplaySnapshot {
 
         for row_idx in display_rows.start.0..display_rows.end.0 {
             let row = DisplayRow(row_idx);
-            for chunk in self.chunks(row..row.next_row(), LanguageAwareStyling { tree_sitter: true, diagnostics: false }, HighlightStyles::default()) {
+            for chunk in self.chunks(
+                row..row.next_row(),
+                LanguageAwareStyling {
+                    tree_sitter: true,
+                    diagnostics: false,
+                },
+                HighlightStyles::default(),
+            ) {
                 let background = chunk
                     .parent_syntax_highlight_ids
                     .iter()
