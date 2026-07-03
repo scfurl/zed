@@ -6,6 +6,7 @@ use workspace::{Workspace, dock::Panel};
 pub fn send_to_terminal(
     text: &str,
     bracketed_paste: bool,
+    language_name: Option<&str>,
     workspace: &WeakEntity<Workspace>,
     cx: &mut App,
 ) {
@@ -37,6 +38,11 @@ pub fn send_to_terminal(
 
     let is_multiline = text.contains('\n');
     let use_bracketed = bracketed_paste && is_multiline;
+
+    if language_name == Some("Python") && is_multiline && is_ipython_terminal(&terminal, cx) {
+        send_to_ipython_cpaste(&text, terminal, cx);
+        return;
+    }
 
     if use_bracketed {
         terminal.update(cx, |terminal, _| {
@@ -96,4 +102,55 @@ fn find_active_terminal(workspace: &Workspace, cx: &App) -> Option<Entity<Termin
         .active_item()
         .and_then(|item| item.downcast::<TerminalView>())?;
     Some(terminal_view.read(cx).terminal().clone())
+}
+
+fn is_ipython_terminal(terminal: &Entity<Terminal>, cx: &App) -> bool {
+    let content = terminal.read(cx).last_content();
+    let cursor_line = content.cursor.point.line;
+    let mut text = String::new();
+    for cell in &content.cells {
+        if cell.point.line == cursor_line {
+            text.push(cell.character());
+        }
+    }
+    is_ipython_prompt(&text)
+}
+
+fn is_ipython_prompt(text: &str) -> bool {
+    text.contains("In [") && text.contains("]:")
+}
+
+fn send_to_ipython_cpaste(text: &str, terminal: Entity<Terminal>, cx: &mut App) {
+    let text = format!("{}\r--\r", text.replace('\n', "\r"));
+    terminal.update(cx, |terminal, _| {
+        terminal.input(b"%cpaste -q\r".to_vec());
+    });
+
+    cx.spawn({
+        let terminal = terminal.downgrade();
+        async move |cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(100))
+                .await;
+
+            if let Err(error) = terminal.update(cx, |terminal, _| {
+                terminal.input(text.into_bytes());
+            }) {
+                log::warn!("send_code: terminal was dropped while sending IPython cpaste: {error}");
+            }
+        }
+    })
+    .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_ipython_prompt() {
+        assert!(is_ipython_prompt("In [12]: "));
+        assert!(!is_ipython_prompt(">>> "));
+        assert!(!is_ipython_prompt("... "));
+    }
 }

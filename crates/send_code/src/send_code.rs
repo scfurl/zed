@@ -13,6 +13,8 @@ pub use settings::SendCodeSettingsContent;
 actions!(
     send_code,
     [
+        /// Send the current selection, or the smallest evaluable block at the cursor.
+        SendToTerminal,
         /// Send the current selection to the active terminal.
         SendSelectionToTerminal,
         /// Send the smallest evaluable block at the cursor to the active terminal.
@@ -37,6 +39,18 @@ pub fn init(cx: &mut App) {
             editor
                 .register_action({
                     let editor_handle = editor_handle.clone();
+                    move |_: &SendToTerminal, window, cx| {
+                        if !SendCodeSettings::enabled(cx) {
+                            return;
+                        }
+                        send_action(editor_handle.clone(), window, cx);
+                    }
+                })
+                .detach();
+
+            editor
+                .register_action({
+                    let editor_handle = editor_handle.clone();
                     move |_: &SendSelectionToTerminal, window, cx| {
                         if !SendCodeSettings::enabled(cx) {
                             return;
@@ -57,6 +71,22 @@ pub fn init(cx: &mut App) {
         },
     )
     .detach();
+}
+
+fn send_action(editor: gpui::WeakEntity<Editor>, window: &mut gpui::Window, cx: &mut App) {
+    let Some(editor_entity) = editor.upgrade() else {
+        return;
+    };
+
+    let payload = editor_entity.update(cx, |editor, cx| {
+        code_getter::get_selection(editor, cx)
+            .or_else(|| code_getter::get_eval_at_cursor(editor, cx))
+    });
+
+    if let Some(payload) = payload {
+        send_payload(&payload, &editor_entity, cx);
+        advance_cursor(payload.advance_to, &editor_entity, window, cx);
+    }
 }
 
 fn send_selection_action(
@@ -85,14 +115,22 @@ fn send_eval_action(editor: gpui::WeakEntity<Editor>, window: &mut gpui::Window,
 
     if let Some(payload) = payload {
         send_payload(&payload, &editor_entity, cx);
+        advance_cursor(payload.advance_to, &editor_entity, window, cx);
+    }
+}
 
-        if let Some(advance_to) = payload.advance_to {
-            editor_entity.update(cx, |editor, cx| {
-                editor.change_selections(SelectionEffects::default(), window, cx, |selections| {
-                    selections.select_ranges([advance_to..advance_to]);
-                });
+fn advance_cursor(
+    advance_to: Option<language::Point>,
+    editor: &gpui::Entity<Editor>,
+    window: &mut gpui::Window,
+    cx: &mut App,
+) {
+    if let Some(advance_to) = advance_to {
+        editor.update(cx, |editor, cx| {
+            editor.change_selections(SelectionEffects::default(), window, cx, |selections| {
+                selections.select_ranges([advance_to..advance_to]);
             });
-        }
+        });
     }
 }
 
@@ -106,5 +144,11 @@ fn send_payload(payload: &code_getter::CodePayload, editor: &gpui::Entity<Editor
         return;
     };
 
-    senders::send_to_terminal(&payload.text, settings.bracketed_paste, &workspace, cx);
+    senders::send_to_terminal(
+        &payload.text,
+        settings.bracketed_paste,
+        payload.language_name.as_deref(),
+        &workspace,
+        cx,
+    );
 }

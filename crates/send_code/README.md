@@ -6,10 +6,22 @@ Send code from the editor to Zed's built-in terminal.
 
 | Action | Behavior |
 |---|---|
+| `send_code::SendToTerminal` | Send the current selection when non-empty; otherwise send the smallest evaluable block at the cursor. Advances the cursor when using cursor-based eval. |
 | `send_code::SendSelectionToTerminal` | Send the current selection to the active terminal. No-op when the selection is empty. |
-| `send_code::SendEvalAtCursorToTerminal` | Find the smallest evaluable block containing the cursor via the language's `eval.scm` tree-sitter query and send it. Advances the cursor to the next line. No-op when the cursor is not inside an `@eval` node. |
+| `send_code::SendEvalAtCursorToTerminal` | Find the smallest evaluable block containing the cursor via the language's `eval.scm` tree-sitter query and send it. Advances the cursor to the next line. Blank lines send a return and advance; other non-`@eval` locations no-op. |
 
-To get "send the current line" behavior, compose actions:
+For a Positron/RStudio-style send key:
+
+```json
+{
+  "context": "Editor && mode == full",
+  "bindings": {
+    "shift-enter": "send_code::SendToTerminal"
+  }
+}
+```
+
+To get explicit "send the current line" behavior, compose actions:
 
 ```json
 {
@@ -48,4 +60,4 @@ Each language grammar may ship an `eval.scm` query that captures the nodes that 
 (assignment) @eval
 ```
 
-Languages bundled in core today with `eval.scm` queries: bash, javascript, python, typescript. Other languages can opt in by adding an `eval.scm` to their grammar; until they do, `SendEvalAtCursorToTerminal` is a no-op for cursors in those buffers.
+Languages bundled in core today with `eval.scm` queries: bash, javascript, python, typescript. Other languages can opt in by adding an `eval.scm` to their grammar; until they do, `SendEvalAtCursorToTerminal` only handles blank lines in those buffers.

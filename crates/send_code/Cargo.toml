@@ -26,3 +26,5 @@ workspace.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 language = { workspace = true, features = ["test-support"] }
 tree-sitter-bash.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-r.workspace = true
